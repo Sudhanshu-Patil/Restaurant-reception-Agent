@@ -52,6 +52,18 @@
   .msg.user .bubble { background: var(--user); border: 1px solid var(--border); }
   .msg.agent .bubble { background: var(--agent); border: 1px solid var(--border); }
   .msg .role { font-size: 11px; color: var(--muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: .04em; }
+  .msg.agent .bubble { white-space: normal; }
+  .bubble > p { margin: 0 0 8px; }
+  .bubble > p:last-child, .bubble > *:last-child { margin-bottom: 0; }
+  .bubble h1, .bubble h2, .bubble h3, .bubble h4 { margin: 4px 0 6px; font-size: 15px; }
+  .bubble ul, .bubble ol { margin: 4px 0 8px; padding-left: 20px; }
+  .bubble li { margin: 2px 0; }
+  .bubble strong { color: #fff; }
+  .bubble code { background: #0c0e13; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 12.5px; }
+  .bubble table { border-collapse: collapse; margin: 6px 0; font-size: 13px; display: block; overflow-x: auto; }
+  .bubble th, .bubble td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; }
+  .bubble th { background: #12151c; }
+  .bubble a { color: var(--accent-2); }
   .trace {
     max-width: 78%; background: #12151c; border: 1px solid var(--border); border-radius: 10px;
     padding: 10px 12px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -117,7 +129,8 @@ let busy = false;
 function addMessage(role, text) {
   const el = document.createElement("div");
   el.className = "msg " + (role === "user" ? "user" : "agent");
-  el.innerHTML = `<div class="bubble"><div class="role">${role === "user" ? "you" : "agent"}</div>${escapeHtml(text)}</div>`;
+  const body = role === "user" ? escapeHtml(text) : renderMarkdown(text);
+  el.innerHTML = `<div class="bubble"><div class="role">${role === "user" ? "you" : "agent"}</div>${body}</div>`;
   $("wrap").appendChild(el);
   scroll();
   return el;
@@ -140,6 +153,61 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 function scroll() { document.querySelector("main").scrollTop = 1e9; }
+
+// Minimal, safe Markdown -> HTML for the subset the agent uses.
+// Everything is HTML-escaped first, then a small set of inline/block rules apply.
+function mdInline(s) {
+  return s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+function renderMarkdown(src) {
+  const lines = escapeHtml(src).replace(/\r\n/g, "\n").split("\n");
+  const out = [];
+  let list = null; // 'ul' | 'ol'
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // GFM table: header row, delimiter row, then body rows
+    if (/^\s*\|.*\|\s*$/.test(line) && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1] || "")) {
+      closeList();
+      const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const head = cells(line);
+      out.push("<table><thead><tr>" + head.map((c) => `<th>${mdInline(c)}</th>`).join("") + "</tr></thead><tbody>");
+      i += 2;
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        out.push("<tr>" + cells(lines[i]).map((c) => `<td>${mdInline(c)}</td>`).join("") + "</tr>");
+        i++;
+      }
+      i--;
+      out.push("</tbody></table>");
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) { closeList(); const n = heading[1].length; out.push(`<h${n}>${mdInline(heading[2])}</h${n}>`); continue; }
+
+    const ul = line.match(/^\s*[-*]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (ul || ol) {
+      const want = ul ? "ul" : "ol";
+      if (list !== want) { closeList(); out.push(`<${want}>`); list = want; }
+      out.push(`<li>${mdInline((ul || ol)[1])}</li>`);
+      continue;
+    }
+
+    if (line.trim() === "") { closeList(); continue; }
+    closeList();
+    out.push(`<p>${mdInline(line)}</p>`);
+  }
+  closeList();
+  return out.join("");
+}
 
 async function start() {
   const phone = $("phone").value.trim();
@@ -187,7 +255,7 @@ async function send() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Request failed");
-    pending.querySelector(".bubble").innerHTML = `<div class="role">agent</div>${escapeHtml(data.reply)}`;
+    pending.querySelector(".bubble").innerHTML = `<div class="role">agent</div>${renderMarkdown(data.reply)}`;
     if (data.trace) addTrace(data.trace);
   } catch (e) {
     pending.querySelector(".bubble").innerHTML = `<div class="role">agent</div>⚠️ ${escapeHtml(e.message)}`;
