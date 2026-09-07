@@ -1,6 +1,14 @@
+# secrets
 .env
+**/.env
+
+# python
 __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
 venv/
+
+# macOS archive cruft
+__MACOSX/
+.DS_Store
