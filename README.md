@@ -162,6 +162,11 @@ customer's stored `seating` preference when they didn't specify one, falls back 
 any area if the preferred one is full (and says so), then books the **smallest**
 fitting table to maximise utilisation.
 
+`change_reservation` encodes the correct move sequence so the model can't get it
+wrong: release the old booking, find a table for the new time/party/area, re-book.
+If the cancel is refused (2-hour cutoff) or nothing fits, the original booking is
+restored untouched — the agent never ends up creating a duplicate reservation.
+
 ### Reasoning trace
 
 Every turn produces a `TurnTrace` (LLM rounds, each tool call + arguments + result

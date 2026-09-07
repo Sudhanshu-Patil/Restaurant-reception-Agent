@@ -18,6 +18,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from agent.backend.errors import BackendError
 from agent.tools.context import ToolContext
 from agent.tools.registry import ToolRegistry
 from agent.util.datetime_utils import nearest_slot, parse_when
@@ -218,6 +219,103 @@ def cancel_reservation(args: CancelReservationArgs, ctx: ToolContext) -> dict:
     if ctx.session.active_reservation_id == rid:
         ctx.session.active_reservation_id = None
     return {"cancelled": result}
+
+
+class ChangeReservationArgs(BaseModel):
+    reservation_id: Optional[int] = Field(
+        None, description="Omit to change this conversation's active reservation"
+    )
+    when: Optional[str] = Field(None, description="New date/time; omit to keep it")
+    party_size: Optional[int] = Field(None, gt=0, description="New party size; omit to keep it")
+    location: Optional[Literal["indoor", "outdoor"]] = Field(
+        None, description="New seating area; omit to keep current / use stored preference"
+    )
+    special_requests: Optional[str] = None
+
+
+@registry.register(
+    "change_reservation",
+    "Move or modify an existing reservation (different time, party size, or seating "
+    "area). Cancels the old booking and re-books in one safe step — use this instead "
+    "of making a second reservation. If the change can't be made (e.g. the 2-hour "
+    "cancellation cutoff, or no table fits), the original booking is left untouched.",
+    ChangeReservationArgs,
+)
+def change_reservation(args: ChangeReservationArgs, ctx: ToolContext) -> dict:
+    rid = args.reservation_id or ctx.session.active_reservation_id
+    if rid is None:
+        return {"error": "No reservation specified and none is active. Ask which one."}
+
+    current = ctx.backend.get_reservation(rid)
+    if current["status"] != "confirmed":
+        return {"error": f"Reservation {rid} is {current['status']} and cannot be changed."}
+
+    slot = (
+        nearest_slot(parse_when(args.when))
+        if args.when
+        else datetime.fromisoformat(current["slot_datetime"])
+    )
+    party = args.party_size or current["party_size"]
+    location = args.location or ctx.memory.preferences.get("seating")
+    special = (
+        args.special_requests
+        if args.special_requests is not None
+        else current.get("special_requests")
+    )
+
+    # 1. release the old booking first (this is what the 2-hour rule blocks).
+    try:
+        ctx.backend.cancel_reservation(rid)
+    except BackendError as exc:
+        return {
+            "error": f"Couldn't change reservation {rid}: {exc.detail}",
+            "status_code": exc.status_code,
+            "unchanged_reservation": current,
+        }
+
+    # 2. find a table for the new requirements.
+    data = ctx.backend.check_availability(slot, party, location=location)
+    tables = data["available_tables"]
+    used_location = location
+    if not tables and location:
+        data = ctx.backend.check_availability(slot, party, location=None)
+        tables = data["available_tables"]
+        used_location = None
+
+    if not tables:
+        restored = _recreate(ctx, current)
+        ctx.session.active_reservation_id = restored["id"]
+        return {
+            "error": f"No {location or ''} table for {party} at {slot.isoformat()}; "
+            "kept your original booking.",
+            "reservation": restored,
+        }
+
+    best = min(tables, key=lambda t: (t["capacity"], t["table_number"]))
+    new_reservation = ctx.backend.create_reservation(
+        customer_id=ctx.session.customer_id,
+        table_id=best["table_id"],
+        slot_datetime=slot,
+        party_size=party,
+        special_requests=special,
+    )
+    ctx.session.active_reservation_id = new_reservation["id"]
+    return {
+        "changed_from": rid,
+        "reservation": new_reservation,
+        "assigned_table": best,
+        "seating": used_location or best["location"],
+    }
+
+
+def _recreate(ctx: ToolContext, reservation: dict) -> dict:
+    return ctx.backend.create_reservation(
+        customer_id=ctx.session.customer_id,
+        table_id=reservation["table_id"],
+        slot_datetime=datetime.fromisoformat(reservation["slot_datetime"]),
+        party_size=reservation["party_size"],
+        special_requests=reservation.get("special_requests"),
+    )
 
 
 # --------------------------------------------------------------------------

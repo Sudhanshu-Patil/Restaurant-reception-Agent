@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 
 from agent.tools.catalog import registry
 
@@ -56,6 +57,35 @@ def test_book_table_picks_smallest_fitting_table(ctx):
     assert out["seating"] == "outdoor"
     assert out["reservation"]["status"] == "confirmed"
     assert ctx.session.active_reservation_id == out["reservation"]["id"]
+
+
+def test_change_reservation_moves_booking_and_cancels_old(ctx, backend):
+    booking = _call(
+        "book_table",
+        {"when": "tomorrow 7:00pm", "party_size": 2, "location": "indoor"},
+        ctx,
+    )
+    old_id = booking["reservation"]["id"]
+
+    out = _call("change_reservation", {"location": "outdoor"}, ctx)
+    assert out["changed_from"] == old_id
+    assert out["assigned_table"]["location"] == "outdoor"
+    assert out["reservation"]["id"] != old_id
+    assert backend.get_reservation(old_id)["status"] == "cancelled"
+    assert ctx.session.active_reservation_id == out["reservation"]["id"]
+
+
+def test_change_reservation_blocked_by_cutoff_leaves_original(ctx, backend):
+    soon = backend.create_reservation(
+        customer_id=1, table_id=2,
+        slot_datetime=datetime.now() + timedelta(minutes=45),
+        party_size=2,
+    )
+    ctx.session.active_reservation_id = soon["id"]
+
+    out = _call("change_reservation", {"location": "outdoor"}, ctx)
+    assert "error" in out and "2 hours" in out["error"]
+    assert backend.get_reservation(soon["id"])["status"] == "confirmed"
 
 
 def test_book_table_honours_explicit_location_over_preference(ctx):
