@@ -1,9 +1,10 @@
-"""Optional REST interface.
+"""REST interface + a minimal browser chat UI.
 
     uvicorn agent.api:app --port 8100
 
-    POST /sessions                      {phone|email, name?}     -> {session_id, ...}
-    POST /sessions/{session_id}/messages {content, verbose?}     -> {reply, trace?}
+    GET  /                                -> single-page chat UI
+    POST /sessions                       {phone|email, name?}   -> {session_id, ...}
+    POST /sessions/{session_id}/messages {content, verbose?}    -> {reply, trace?}
 
 Sessions are held in memory — fine for a single-process demo.
 """
@@ -11,8 +12,10 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from agent.agent import ReceptionAgent
@@ -36,6 +39,13 @@ _llm = GroqClient(
 _agent = ReceptionAgent(_llm, registry, _backend, _settings)
 
 app = FastAPI(title="Restaurant Reception Agent")
+
+_WEB_DIR = Path(__file__).parent / "web"
+
+
+@app.get("/", include_in_schema=False)
+def index() -> FileResponse:
+    return FileResponse(_WEB_DIR / "index.html")
 
 
 @dataclass

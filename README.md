@@ -37,6 +37,16 @@ python -m agent.cli --email new@example.com --name "New Guest"
 python -m agent.cli --phone "+91-9876543210" --verbose   # show the reasoning trace
 ```
 
+### Talk to it (browser)
+
+```bash
+uvicorn agent.api:app --port 8100
+```
+
+Open **http://localhost:8100** — a single-page chat UI (no build step, served by the
+API itself). Identify by phone/email, then chat; tick *show reasoning trace* to see
+which tools ran each turn. Swagger docs are at `/docs`.
+
 ### Talk to it (REST)
 
 ```bash
@@ -82,6 +92,7 @@ agent/
   agent.py               ReceptionAgent.run_turn() — the loop
   trace.py               TurnTrace — auditable per-turn record
   cli.py / api.py        thin interfaces
+  web/index.html         zero-dependency browser chat UI served by api.py
 ```
 
 **Layering.** Each layer depends only on the one below and never skips:
@@ -167,7 +178,7 @@ endpoint print it, so a manager can audit a conversation after the fact.
 | **LLM transport** | raw `httpx`, no SDK | One endpoint, one call shape. Avoids pulling the OpenAI/Groq SDK for ~30 lines of HTTP; keeps the dependency surface small. |
 | **Tool schemas** | Pydantic → `model_json_schema()` | Single source of truth: the same model validates the model's arguments and generates its documentation. |
 | **Memory storage** | the backend's `preferences` blob | The exercise's intended store; survives restarts; no extra datastore to run. Derived history is recomputed on load rather than cached. |
-| **Interface** | CLI (primary) + REST (bonus) | CLI is the fastest way to demo a multi-turn conversation; REST shows the interface layer is thin and swappable. |
+| **Interface** | CLI (primary) + REST + a static browser UI | CLI is the fastest demo; REST shows the interface layer is thin; `web/index.html` is a dependency-free chat page (vanilla JS, served by the API) for a nicer walkthrough. |
 | **Conversation state** | in-memory | Single-process demo. A real deployment would back `Conversation` with Redis/DB; nothing else changes. |
 | **Datetime parsing** | `get_current_datetime` tool + `dateutil` fallback | The model is told to resolve relative times itself; loose phrases ("tomorrow around 8") are still snapped to a valid 30-min slot defensively. The backend has the final say. |
 
