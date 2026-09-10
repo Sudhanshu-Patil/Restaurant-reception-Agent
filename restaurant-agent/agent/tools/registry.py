@@ -5,11 +5,13 @@ and turns every failure mode (unknown tool, bad JSON, bad arguments, backend err
 unexpected exception) into a JSON string with an ``error`` field the model can read
 and react to.
 """
+
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Type
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
@@ -23,7 +25,7 @@ ToolFn = Callable[[BaseModel, ToolContext], dict]
 class Tool:
     name: str
     description: str
-    args_model: Type[BaseModel]
+    args_model: type[BaseModel]
     fn: ToolFn
 
     def openai_spec(self) -> dict[str, Any]:
@@ -44,7 +46,7 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
 
     def register(
-        self, name: str, description: str, args_model: Type[BaseModel]
+        self, name: str, description: str, args_model: type[BaseModel]
     ) -> Callable[[ToolFn], ToolFn]:
         """Decorator: attach a function to the registry under ``name``."""
 
@@ -71,9 +73,7 @@ class ToolRegistry:
         """Run tool ``name``. Always returns a JSON string; never raises."""
         tool = self._tools.get(name)
         if tool is None:
-            return _error(
-                f"Unknown tool {name!r}. Available: {', '.join(self._tools) or '(none)'}"
-            )
+            return _error(f"Unknown tool {name!r}. Available: {', '.join(self._tools) or '(none)'}")
 
         try:
             raw = json.loads(raw_arguments or "{}")
@@ -91,7 +91,7 @@ class ToolRegistry:
             result = tool.fn(args, ctx)
         except BackendError as exc:
             return json.dumps({"error": exc.detail, "status_code": exc.status_code})
-        except Exception as exc:  # noqa: BLE001 — must not break the agent loop
+        except Exception as exc:
             return _error(f"{type(exc).__name__}: {exc}")
 
         return json.dumps(result, default=str)
@@ -103,6 +103,5 @@ def _error(message: str) -> str:
 
 def _format_validation(exc: ValidationError) -> str:
     return "; ".join(
-        f"{'.'.join(str(p) for p in err['loc']) or '<root>'}: {err['msg']}"
-        for err in exc.errors()
+        f"{'.'.join(str(p) for p in err['loc']) or '<root>'}: {err['msg']}" for err in exc.errors()
     )

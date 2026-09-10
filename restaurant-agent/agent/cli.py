@@ -1,8 +1,9 @@
 """Interactive CLI. Identify once, then converse freely.
 
-    python -m agent.cli --phone +91-9876543210
-    python -m agent.cli --email someone@example.com --verbose
+python -m agent.cli --phone +91-9876543210
+python -m agent.cli --email someone@example.com --verbose
 """
+
 from __future__ import annotations
 
 import argparse

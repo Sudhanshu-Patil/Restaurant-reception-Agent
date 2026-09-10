@@ -1,4 +1,5 @@
 """Reasoning trace — an auditable record of what the agent did in one turn."""
+
 from __future__ import annotations
 
 import json

@@ -1,4 +1,5 @@
 """End-to-end agent loop driven by a scripted LLM — no network."""
+
 from __future__ import annotations
 
 import json
@@ -8,7 +9,6 @@ from agent.config import Settings
 from agent.conversation import Conversation
 from agent.llm.base import LLMMessage, MalformedToolCall, ToolCall
 from agent.llm.stub import ScriptedLLM
-from agent.memory.customer_memory import CustomerMemory
 from agent.tools.catalog import registry
 
 
@@ -30,9 +30,14 @@ def test_booking_then_ordering_flow(backend, priya_session, memory):
             LLMMessage(tool_calls=[_tc("1", "book_table", when="tomorrow 8:00pm", party_size=3)]),
             LLMMessage(
                 tool_calls=[
-                    _tc("2", "add_items_to_reservation",
-                        items=[{"name": "paneer tikka", "quantity": 1},
-                               {"name": "dal makhani", "quantity": 2}])
+                    _tc(
+                        "2",
+                        "add_items_to_reservation",
+                        items=[
+                            {"name": "paneer tikka", "quantity": 1},
+                            {"name": "dal makhani", "quantity": 2},
+                        ],
+                    )
                 ]
             ),
             LLMMessage(content="Booked table 7 outside and added your usuals. See you at 8!"),
@@ -43,7 +48,9 @@ def test_booking_then_ordering_flow(backend, priya_session, memory):
 
     reply, trace = agent.run_turn(
         "Book a table for 3 tomorrow at 8 and add one paneer tikka and two dal makhani",
-        convo, priya_session, memory,
+        convo,
+        priya_session,
+        memory,
     )
 
     assert "8" in reply

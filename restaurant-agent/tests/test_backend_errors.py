@@ -1,4 +1,5 @@
 """Backend business-rule errors must surface as tool results and reach the customer."""
+
 from __future__ import annotations
 
 import json
@@ -22,7 +23,8 @@ def _tc(cid, name, **args):
 
 def test_double_booking_returns_409_as_tool_error(ctx, backend):
     backend.create_reservation(
-        customer_id=1, table_id=5,
+        customer_id=1,
+        table_id=5,
         slot_datetime=datetime.now().replace(hour=19, minute=0, second=0, microsecond=0)
         + timedelta(days=1),
         party_size=4,
@@ -40,14 +42,13 @@ def test_double_booking_returns_409_as_tool_error(ctx, backend):
 
 def test_cancellation_within_cutoff_surfaces_to_customer(ctx, backend):
     soon = backend.create_reservation(
-        customer_id=1, table_id=5,
+        customer_id=1,
+        table_id=5,
         slot_datetime=datetime.now() + timedelta(minutes=30),
         party_size=2,
     )
     out = json.loads(
-        registry.dispatch(
-            "cancel_reservation", json.dumps({"reservation_id": soon["id"]}), ctx
-        )
+        registry.dispatch("cancel_reservation", json.dumps({"reservation_id": soon["id"]}), ctx)
     )
     assert out["status_code"] == 409
     assert "2 hours" in out["error"]
@@ -55,7 +56,8 @@ def test_cancellation_within_cutoff_surfaces_to_customer(ctx, backend):
 
 def test_agent_relays_backend_error_instead_of_crashing(backend, priya_session, memory):
     soon = backend.create_reservation(
-        customer_id=1, table_id=5,
+        customer_id=1,
+        table_id=5,
         slot_datetime=datetime.now() + timedelta(minutes=30),
         party_size=2,
     )

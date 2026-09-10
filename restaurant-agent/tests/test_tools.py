@@ -1,4 +1,5 @@
 """Tool layer: dispatch safety + individual tool behaviour. No LLM involved."""
+
 from __future__ import annotations
 
 import json
@@ -77,7 +78,8 @@ def test_change_reservation_moves_booking_and_cancels_old(ctx, backend):
 
 def test_change_reservation_blocked_by_cutoff_leaves_original(ctx, backend):
     soon = backend.create_reservation(
-        customer_id=1, table_id=2,
+        customer_id=1,
+        table_id=2,
         slot_datetime=datetime.now() + timedelta(minutes=45),
         party_size=2,
     )
@@ -108,9 +110,9 @@ def test_add_items_matches_names_and_skips_guarded_items(ctx):
             "avoid_tags": ["contains-nuts"],
             "items": [
                 {"name": "paneer tikka", "quantity": 2},
-                {"name": "kulfi", "quantity": 1},          # unavailable
+                {"name": "kulfi", "quantity": 1},  # unavailable
                 {"name": "butter chicken", "quantity": 1},  # nuts (avoided)
-                {"name": "flying pizza", "quantity": 1},     # not on menu
+                {"name": "flying pizza", "quantity": 1},  # not on menu
             ],
         },
         ctx,

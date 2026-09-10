@@ -1,4 +1,5 @@
 """Durable customer memory: load, derive, persist."""
+
 from __future__ import annotations
 
 import json
@@ -45,9 +46,7 @@ def test_remember_preference_tool_updates_memory(backend):
         memory=mem,
     )
     out = json.loads(
-        registry.dispatch(
-            "remember_preference", '{"key": "seating", "value": "indoor"}', ctx
-        )
+        registry.dispatch("remember_preference", '{"key": "seating", "value": "indoor"}', ctx)
     )
     assert out["preferences"]["seating"] == "indoor"
     assert mem.preferences["seating"] == "indoor"
@@ -61,17 +60,13 @@ def test_stored_allergy_blocks_ordering(backend):
     ctx = ToolContext(backend=backend, session=session, memory=mem)
 
     booking = json.loads(
-        registry.dispatch(
-            "book_table", '{"when": "tomorrow 7:00pm", "party_size": 2}', ctx
-        )
+        registry.dispatch("book_table", '{"when": "tomorrow 7:00pm", "party_size": 2}', ctx)
     )
     rid = booking["reservation"]["id"]
     out = json.loads(
         registry.dispatch(
             "add_items_to_reservation",
-            json.dumps(
-                {"reservation_id": rid, "items": [{"name": "butter chicken"}]}
-            ),
+            json.dumps({"reservation_id": rid, "items": [{"name": "butter chicken"}]}),
             ctx,
         )
     )

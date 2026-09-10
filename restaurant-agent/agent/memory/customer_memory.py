@@ -12,6 +12,7 @@ we own. We use:
 
 Order history is derived on load from ``/customers/{id}/orders`` joined with the menu.
 """
+
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -37,9 +38,7 @@ class CustomerMemory:
         self.preferences = dict(customer.get("preferences") or {})
         self._reservations = self._backend.list_customer_reservations(self._customer_id)
         self._orders = self._backend.list_customer_orders(self._customer_id)
-        self._menu_by_id = {
-            m["id"]: m for m in self._backend.list_menu(available_only=False)
-        }
+        self._menu_by_id = {m["id"]: m for m in self._backend.list_menu(available_only=False)}
 
     # -- writing -------------------------------------------------------
     def remember(self, key: str, value: str) -> None:
@@ -70,7 +69,7 @@ class CustomerMemory:
         return tags
 
     def order_history(self) -> list[dict]:
-        agg: "OrderedDict[int, dict]" = OrderedDict()
+        agg: OrderedDict[int, dict] = OrderedDict()
         for o in self._orders:
             item = self._menu_by_id.get(o["menu_item_id"])
             name = item["name"] if item else f"item #{o['menu_item_id']}"
@@ -91,17 +90,13 @@ class CustomerMemory:
         if p.get("dietary"):
             lines.append(f"- Dietary preferences: {', '.join(p['dietary'])}")
         if p.get("allergies"):
-            lines.append(
-                f"- ALLERGIES (never let them order these): {', '.join(p['allergies'])}"
-            )
+            lines.append(f"- ALLERGIES (never let them order these): {', '.join(p['allergies'])}")
         if p.get("notes"):
             lines.append(f"- Notes: {'; '.join(p['notes'])}")
 
         history = self.order_history()
         if history:
-            top = ", ".join(
-                f"{h['item']} (x{h['total_quantity']})" for h in history[:5]
-            )
+            top = ", ".join(f"{h['item']} (x{h['total_quantity']})" for h in history[:5])
             lines.append(f"- Has previously ordered: {top}")
 
         upcoming = [r for r in self._reservations if r.get("status") == "confirmed"]

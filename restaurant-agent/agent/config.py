@@ -1,4 +1,5 @@
 """Runtime configuration, loaded once from the environment / .env file."""
+
 from __future__ import annotations
 
 import os
@@ -21,11 +22,9 @@ class Settings:
     max_agent_steps: int = 8
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         return cls(
             groq_api_key=os.environ.get("GROQ_API_KEY", ""),
             model=os.environ.get("MODEL", "openai/gpt-oss-20b"),
-            restaurant_api_url=os.environ.get(
-                "RESTAURANT_API_URL", "http://localhost:8000"
-            ),
+            restaurant_api_url=os.environ.get("RESTAURANT_API_URL", "http://localhost:8000"),
         )

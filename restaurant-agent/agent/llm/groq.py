@@ -3,11 +3,12 @@
 Groq exposes an OpenAI-compatible ``/chat/completions`` endpoint with native tool
 calling, so this is a straight HTTP wrapper.
 """
+
 from __future__ import annotations
 
 import re
 import time
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -28,7 +29,7 @@ class GroqClient:
         model: str,
         base_url: str = "https://api.groq.com/openai/v1",
         timeout: float = 60.0,
-        client: Optional[httpx.Client] = None,
+        client: httpx.Client | None = None,
     ) -> None:
         if not api_key:
             raise GroqError("GROQ_API_KEY is not set — put it in .env")

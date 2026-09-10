@@ -4,6 +4,7 @@ The rest of the agent depends only on :class:`LLMClient` and the small dataclass
 here — never on Groq, OpenAI, or httpx directly. Swapping providers or dropping in
 a test double is a one-file change.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

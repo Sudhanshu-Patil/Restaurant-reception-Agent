@@ -4,6 +4,7 @@ The backend is strict (naive local time, 30-minute slots 12:00–22:30); the LLM
 encouraged to call ``get_current_datetime`` and pass ISO strings, but customers say
 things like "tomorrow around 8", so we defensively parse those too.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta

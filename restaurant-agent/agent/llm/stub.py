@@ -1,4 +1,5 @@
 """A deterministic LLM double for tests — no network, fully scripted."""
+
 from __future__ import annotations
 
 from typing import Any

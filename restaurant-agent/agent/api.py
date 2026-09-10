@@ -8,6 +8,7 @@
 
 Sessions are held in memory — fine for a single-process demo.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -74,13 +75,11 @@ def start_session(body: StartSessionIn) -> dict:
     if not body.phone and not body.email:
         raise HTTPException(400, "phone or email is required")
     try:
-        session = resolve_customer(
-            _backend, phone=body.phone, email=body.email, name=body.name
-        )
-    except NewCustomerNeedsName:
-        raise HTTPException(400, "New customer — 'name' is required to create a profile")
+        session = resolve_customer(_backend, phone=body.phone, email=body.email, name=body.name)
+    except NewCustomerNeedsName as exc:
+        raise HTTPException(400, "New customer - 'name' is required to create a profile") from exc
     except BackendError as exc:
-        raise HTTPException(exc.status_code, exc.detail)
+        raise HTTPException(exc.status_code, exc.detail) from exc
 
     memory = CustomerMemory(_backend, session.customer_id)
     memory.load()
@@ -98,9 +97,7 @@ def send_message(session_id: str, body: MessageIn) -> dict:
     state = _SESSIONS.get(session_id)
     if state is None:
         raise HTTPException(404, "unknown session_id")
-    reply, trace = _agent.run_turn(
-        body.content, state.conversation, state.session, state.memory
-    )
+    reply, trace = _agent.run_turn(body.content, state.conversation, state.session, state.memory)
     result = {"reply": reply}
     if body.verbose:
         result["trace"] = trace.render()

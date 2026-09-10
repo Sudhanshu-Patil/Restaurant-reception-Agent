@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import pytest
-
 from agent.conversation import Session
 from agent.memory.customer_memory import CustomerMemory
 from agent.tools.context import ToolContext
+
 from tests.fakes import FakeBackend
 
 

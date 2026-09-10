@@ -3,6 +3,7 @@
 Deliberately separate from :mod:`agent.memory`, which holds durable, cross-session
 knowledge about the customer.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

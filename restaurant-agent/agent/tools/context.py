@@ -1,4 +1,5 @@
 """The handle every tool receives: backend access, session identity, memory."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

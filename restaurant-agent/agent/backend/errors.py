@@ -1,4 +1,5 @@
 """Error types for the backend HTTP layer."""
+
 from __future__ import annotations
 
 

@@ -4,6 +4,7 @@ Responsibilities kept out of here on purpose: HTTP (``backend``), model transpor
 (``llm``), argument validation and error shaping (``registry``), durable state
 (``memory``). This module only orchestrates.
 """
+
 from __future__ import annotations
 
 import json
@@ -137,9 +138,7 @@ class ReceptionAgent:
                     )
                 )
 
-        fallback = (
-            "Sorry — I couldn't finish that. Could you rephrase or break it into steps?"
-        )
+        fallback = "Sorry — I couldn't finish that. Could you rephrase or break it into steps?"
         trace.final_response = fallback
         return fallback, trace
 
@@ -169,8 +168,6 @@ def _assistant_to_dict(msg: LLMMessage) -> dict:
 
 def _is_error(tool_result: str) -> bool:
     try:
-        return isinstance(json.loads(tool_result), dict) and "error" in json.loads(
-            tool_result
-        )
+        return isinstance(json.loads(tool_result), dict) and "error" in json.loads(tool_result)
     except (ValueError, TypeError):
         return False

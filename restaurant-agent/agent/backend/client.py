@@ -3,10 +3,11 @@
 One method per endpoint. Every non-2xx response becomes a :class:`BackendError`.
 Nothing above this layer knows about HTTP, URLs, or status codes.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -27,8 +28,7 @@ def _extract_detail(resp: httpx.Response) -> str:
     detail = body.get("detail") if isinstance(body, dict) else None
     if isinstance(detail, list):  # FastAPI validation errors
         return "; ".join(
-            f"{'.'.join(str(p) for p in e.get('loc', []))}: {e.get('msg', '')}"
-            for e in detail
+            f"{'.'.join(str(p) for p in e.get('loc', []))}: {e.get('msg', '')}" for e in detail
         )
     return str(detail) if detail is not None else resp.text
 
@@ -40,7 +40,7 @@ class RestaurantClient:
         self,
         base_url: str,
         timeout: float = 30.0,
-        client: Optional[httpx.Client] = None,
+        client: httpx.Client | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._client = client or httpx.Client(base_url=self._base_url, timeout=timeout)
@@ -49,7 +49,7 @@ class RestaurantClient:
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> "RestaurantClient":
+    def __enter__(self) -> RestaurantClient:
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -68,9 +68,7 @@ class RestaurantClient:
         return resp.json()
 
     # -- tables --------------------------------------------------------
-    def list_tables(
-        self, location: str | None = None, min_capacity: int | None = None
-    ) -> JSON:
+    def list_tables(self, location: str | None = None, min_capacity: int | None = None) -> JSON:
         return self._request(
             "GET",
             "/tables",
@@ -119,9 +117,7 @@ class RestaurantClient:
         )
 
     # -- customers --------------------------------------------------
-    def lookup_customer(
-        self, phone: str | None = None, email: str | None = None
-    ) -> JSON:
+    def lookup_customer(self, phone: str | None = None, email: str | None = None) -> JSON:
         return self._request(
             "GET",
             "/customers/lookup",
@@ -149,9 +145,7 @@ class RestaurantClient:
             json={"preferences": preferences},
         )
 
-    def list_customer_reservations(
-        self, customer_id: int, status: str | None = None
-    ) -> JSON:
+    def list_customer_reservations(self, customer_id: int, status: str | None = None) -> JSON:
         return self._request(
             "GET",
             f"/customers/{customer_id}/reservations",
@@ -191,9 +185,7 @@ class RestaurantClient:
         return self._request("DELETE", f"/reservations/{reservation_id}")
 
     # -- orders ---------------------------------------------------
-    def add_order_item(
-        self, reservation_id: int, menu_item_id: int, quantity: int = 1
-    ) -> JSON:
+    def add_order_item(self, reservation_id: int, menu_item_id: int, quantity: int = 1) -> JSON:
         return self._request(
             "POST",
             f"/reservations/{reservation_id}/orders",

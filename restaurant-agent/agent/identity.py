@@ -1,4 +1,5 @@
 """Resolve a customer (phone/email) to a :class:`Session`, creating them if new."""
+
 from __future__ import annotations
 
 from agent.backend.client import RestaurantClient

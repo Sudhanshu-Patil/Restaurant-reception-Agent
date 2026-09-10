@@ -1,3 +1,100 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "restaurant-reception-agent"
+version = "1.0.0"
+description = "A conversational AI reception agent for a restaurant, built on top of the provided Restaurant Reservation API."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Sudhanshu Patil" }]
+dependencies = [
+    "httpx==0.28.1",
+    "pydantic==2.10.3",
+    "python-dotenv==1.0.1",
+    "python-dateutil==2.9.0",
+    "fastapi==0.115.5",
+    "uvicorn[standard]==0.32.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-cov>=6.0",
+    "mypy>=1.14",
+    "ruff>=0.9",
+    "types-python-dateutil>=2.9",
+]
+
+[project.scripts]
+reception-agent = "agent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["agent*"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+addopts = "--strict-markers -q"
+
+[tool.coverage.run]
+branch = true
+source = ["agent"]
+omit = ["agent/cli.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 88
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+    "if TYPE_CHECKING:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["agent", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle + pyflakes
+    "I",              # isort
+    "UP",             # pyupgrade
+    "B",              # bugbear
+    "C4",             # comprehensions
+    "SIM",            # simplify
+    "RUF",            # ruff-specific
+    "S",              # flake8-bandit (security)
+    "PTH",            # use pathlib
+    "TID",            # tidy imports
+]
+ignore = [
+    "S101",    # asserts are fine (and expected in tests)
+    "B008",    # FastAPI Depends() in defaults
+    "SIM105",  # contextlib.suppress over try/except/pass - try/except reads fine
+    "RUF001",  # ambiguous unicode in strings - we use en/em dashes deliberately
+    "RUF002",  # ...in docstrings
+    "RUF003",  # ...in comments
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "B011", "B904"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unreachable = true
+disallow_any_generics = true
+show_error_codes = true
+plugins = ["pydantic.mypy"]
+exclude = ["build/"]
+
+[[tool.mypy.overrides]]
+module = ["dateutil.*"]
+ignore_missing_imports = true

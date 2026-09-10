@@ -11,10 +11,11 @@ Conventions:
 - Tools return plain dicts. A dict containing ``"error"`` tells the agent something
   went wrong without raising.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -45,12 +46,12 @@ def get_current_datetime(_args: NoArgs, _ctx: ToolContext) -> dict:
 
 
 class SearchMenuArgs(BaseModel):
-    category: Optional[Literal["starter", "main", "dessert"]] = None
-    max_price: Optional[float] = Field(None, description="Only items at or below this price")
-    include_tags: Optional[list[str]] = Field(
+    category: Literal["starter", "main", "dessert"] | None = None
+    max_price: float | None = Field(None, description="Only items at or below this price")
+    include_tags: list[str] | None = Field(
         None, description="Item must carry ALL of these tags, e.g. ['vegetarian']"
     )
-    exclude_tags: Optional[list[str]] = Field(
+    exclude_tags: list[str] | None = Field(
         None, description="Drop items carrying ANY of these tags, e.g. ['contains-nuts']"
     )
 
@@ -75,7 +76,7 @@ def search_menu(args: SearchMenuArgs, ctx: ToolContext) -> dict:
 class CheckAvailabilityArgs(BaseModel):
     when: str = Field(description="Date & time, natural language or ISO 8601")
     party_size: int = Field(gt=0)
-    location: Optional[Literal["indoor", "outdoor"]] = None
+    location: Literal["indoor", "outdoor"] | None = None
 
 
 @registry.register(
@@ -100,11 +101,11 @@ def check_availability(args: CheckAvailabilityArgs, ctx: ToolContext) -> dict:
 class BookTableArgs(BaseModel):
     when: str = Field(description="Date & time, natural language or ISO 8601")
     party_size: int = Field(gt=0)
-    location: Optional[Literal["indoor", "outdoor"]] = Field(
+    location: Literal["indoor", "outdoor"] | None = Field(
         None,
         description="Leave empty to use the customer's stored seating preference",
     )
-    special_requests: Optional[str] = None
+    special_requests: str | None = None
 
 
 @registry.register(
@@ -158,7 +159,7 @@ class CreateReservationArgs(BaseModel):
     table_id: int = Field(description="A table id from check_availability")
     when: str
     party_size: int = Field(gt=0)
-    special_requests: Optional[str] = None
+    special_requests: str | None = None
 
 
 @registry.register(
@@ -181,7 +182,7 @@ def create_reservation(args: CreateReservationArgs, ctx: ToolContext) -> dict:
 
 
 class ListReservationsArgs(BaseModel):
-    status: Optional[Literal["confirmed", "cancelled", "completed"]] = None
+    status: Literal["confirmed", "cancelled", "completed"] | None = None
 
 
 @registry.register(
@@ -197,7 +198,7 @@ def list_my_reservations(args: ListReservationsArgs, ctx: ToolContext) -> dict:
 
 
 class CancelReservationArgs(BaseModel):
-    reservation_id: Optional[int] = Field(
+    reservation_id: int | None = Field(
         None,
         description="Omit to cancel the reservation created earlier this conversation",
     )
@@ -222,15 +223,15 @@ def cancel_reservation(args: CancelReservationArgs, ctx: ToolContext) -> dict:
 
 
 class ChangeReservationArgs(BaseModel):
-    reservation_id: Optional[int] = Field(
+    reservation_id: int | None = Field(
         None, description="Omit to change this conversation's active reservation"
     )
-    when: Optional[str] = Field(None, description="New date/time; omit to keep it")
-    party_size: Optional[int] = Field(None, gt=0, description="New party size; omit to keep it")
-    location: Optional[Literal["indoor", "outdoor"]] = Field(
+    when: str | None = Field(None, description="New date/time; omit to keep it")
+    party_size: int | None = Field(None, gt=0, description="New party size; omit to keep it")
+    location: Literal["indoor", "outdoor"] | None = Field(
         None, description="New seating area; omit to keep current / use stored preference"
     )
-    special_requests: Optional[str] = None
+    special_requests: str | None = None
 
 
 @registry.register(
@@ -328,10 +329,10 @@ class OrderLine(BaseModel):
 
 class AddItemsArgs(BaseModel):
     items: list[OrderLine] = Field(min_length=1)
-    reservation_id: Optional[int] = Field(
+    reservation_id: int | None = Field(
         None, description="Omit to use this conversation's active reservation"
     )
-    avoid_tags: Optional[list[str]] = Field(
+    avoid_tags: list[str] | None = Field(
         None,
         description="Extra dietary tags to refuse for this order, e.g. ['contains-nuts']",
     )
@@ -372,9 +373,7 @@ def add_items_to_reservation(args: AddItemsArgs, ctx: ToolContext) -> dict:
             )
             continue
         order = ctx.backend.add_order_item(rid, match["id"], line.quantity)
-        added.append(
-            {"item": match["name"], "quantity": line.quantity, "order_id": order["id"]}
-        )
+        added.append({"item": match["name"], "quantity": line.quantity, "order_id": order["id"]})
 
     return {"reservation_id": rid, "added": added, "skipped": skipped}
 
@@ -429,7 +428,7 @@ def remember_preference(args: RememberArgs, ctx: ToolContext) -> dict:
 # --------------------------------------------------------------------------
 # Internal helpers
 # --------------------------------------------------------------------------
-def _match_menu_item(query: str, menu: list[dict]) -> Optional[dict]:
+def _match_menu_item(query: str, menu: list[dict]) -> dict | None:
     """Resolve a customer's dish name to a menu row. Exact, then substring, then
     token-overlap — good enough for 12 items and defensive against typos."""
     q = query.strip().lower()
