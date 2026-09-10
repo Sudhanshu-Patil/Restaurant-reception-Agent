@@ -1,216 +1,249 @@
 # Restaurant Reception Agent
 
-A conversational AI agent that takes reservations, manages orders, answers menu
-questions, and remembers returning customers — built **on top of** the provided
-`restaurant-api` backend, which it treats as a black box reached only over HTTP.
+[![CI](https://github.com/Sudhanshu-Patil/restaurant-reception-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Sudhanshu-Patil/restaurant-reception-agent/actions/workflows/ci.yml)
+![coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)
+![python](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue)
+[![checked: mypy strict](https://img.shields.io/badge/mypy-strict-2a6db2)](https://mypy-lang.org/)
+[![lint: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
+A multi-turn AI reception agent that books tables, manages orders, answers menu
+questions, and remembers returning customers. Built **on top of** the provided
+`restaurant-api`, which it only ever reaches over HTTP - never imports, never
+modifies.
+
+It is a **hand-rolled agent harness**, not a framework wrapper: a small,
+inspectable tool-calling loop behind a provider-agnostic LLM seam, with a
+deterministic guardrail layer, typed tool results, session persistence, an
+idempotency ledger, structured logging, and Server-Sent-Events streaming.
 
 ---
 
-## Quick start
+## Run it
+
+### One command (Docker)
 
 ```bash
-# 1. start the provided backend (from the sibling folder)
-cd ../restaurant-api
-docker compose up -d --build
-curl http://localhost:8000/health          # {"status":"ok"}
-
-# 2. set up this agent
-cd ../restaurant-agent
-python -m venv .venv && source .venv/Scripts/activate   # or .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env                        # then fill in GROQ_API_KEY
+export GROQ_API_KEY=...            # or put it in a .env file at the repo root
+docker compose up -d --build       # from the repository root - starts backend + agent
 ```
 
-`.env`:
+- Chat UI: **http://localhost:8100** · API docs: http://localhost:8100/docs
+- Backend: http://localhost:8000
+
+### Local (Python 3.10+)
+
+```bash
+cd restaurant-api && docker compose up -d --build && cd ..      # provided backend
+cd restaurant-agent
+python -m venv .venv && source .venv/Scripts/activate           # or .venv/bin/activate
+pip install -e ".[dev]"
+cp .env.example .env                                            # set GROQ_API_KEY
+
+make run          # uvicorn on :8100  (chat UI + REST + SSE)
+make cli PHONE="+91-9876543210"
+make check        # ruff + mypy --strict + pytest with coverage gate
+```
+
+`.env`
 
 ```
-GROQ_API_KEY=<your key>          # the provided restaurant-api/.env has a working one
+GROQ_API_KEY=<your key>        # the exercise's restaurant-api/.env ships a working one
 MODEL=openai/gpt-oss-20b
 RESTAURANT_API_URL=http://localhost:8000
 ```
 
-### Talk to it (CLI)
+### Interfaces
+
+| | |
+|---|---|
+| **Browser** | `http://localhost:8100` - streams each tool call as a live status pill |
+| **CLI** | `python -m agent.cli --phone "+91-9876543210" --verbose` |
+| **REST** | `POST /sessions` · `POST /sessions/{id}/messages` (send `client_message_id` for idempotency) |
+| **SSE** | `POST /sessions/{id}/messages/stream` - `tool_call` / `tool_result` / `notice` / `message` / `done` |
+| **Ops** | `GET /health` (liveness) · `GET /ready` (DB + upstream) |
 
 ```bash
-python -m agent.cli --phone "+91-9876543210"       # returning customer (Priya)
-python -m agent.cli --email new@example.com --name "New Guest"
-python -m agent.cli --phone "+91-9876543210" --verbose   # show the reasoning trace
-```
-
-### Talk to it (browser)
-
-```bash
-uvicorn agent.api:app --port 8100
-```
-
-Open **http://localhost:8100** — a single-page chat UI (no build step, served by the
-API itself). Identify by phone/email, then chat; tick *show reasoning trace* to see
-which tools ran each turn. Swagger docs are at `/docs`.
-
-### Talk to it (REST)
-
-```bash
-uvicorn agent.api:app --port 8100
-
-curl -s -X POST localhost:8100/sessions \
-  -H 'content-type: application/json' \
-  -d '{"phone": "+91-9876543210"}'
-# -> {"session_id": "...", "customer": {...}, "memory": "..."}
-
-curl -s -X POST localhost:8100/sessions/<id>/messages \
-  -H 'content-type: application/json' \
-  -d '{"content": "Book a table for 3 tonight around 8", "verbose": true}'
-```
-
-### Run the tests
-
-```bash
-pytest            # 24 tests, no network, no Docker required
+SID=$(curl -s -XPOST localhost:8100/sessions -H 'content-type: application/json' \
+      -d '{"phone":"+91-9876543210"}' | python -c 'import sys,json;print(json.load(sys.stdin)["session_id"])')
+curl -s -XPOST "localhost:8100/sessions/$SID/messages" -H 'content-type: application/json' \
+     -d '{"content":"Book a table for 3 tonight around 8","verbose":true}'
 ```
 
 ---
 
 ## Architecture
 
+Full write-up with layer + sequence diagrams: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+Design rationale (ADR-style): **[docs/DECISIONS.md](docs/DECISIONS.md)**.
+
 ```
 agent/
-  config.py              Settings (env -> immutable dataclass)
-  llm/
-    base.py              LLMClient protocol, LLMMessage/ToolCall, error types
-    groq.py              httpx client for Groq's OpenAI-compatible endpoint
-    stub.py              ScriptedLLM — deterministic test double
-  backend/
-    client.py            RestaurantClient — one typed method per API endpoint
-    errors.py            BackendError(status_code, detail)
-  tools/
-    registry.py          Tool, @register decorator, schema gen, safe dispatch()
-    context.py           ToolContext(backend, session, memory)
-    catalog.py           EVERY tool lives here — one file to add a capability
-  memory/
-    customer_memory.py   durable preferences (via API blob) + derived history
+  config.py              Settings (env -> frozen dataclass), incl. loop budgets
+  service.py             AgentService - composition root; one-turn orchestration
+  agent.py               ReceptionAgent / TurnRunner - the streamed loop + budgets
+  policy.py              deterministic guardrails (confirmation, booking gate)
+  events.py / trace.py   TurnEvent stream · auditable TurnTrace / TurnResult
   conversation.py        Session identity + Conversation transcript
-  agent.py               ReceptionAgent.run_turn() — the loop
-  trace.py               TurnTrace — auditable per-turn record
-  cli.py / api.py        thin interfaces
-  web/index.html         zero-dependency browser chat UI served by api.py
+  llm/                   LLMClient protocol · GroqClient (httpx) · ScriptedLLM
+  backend/               BackendClient protocol · RestaurantClient · BackendError
+  tools/
+    registry.py          @register decorator · schema gen · safe dispatch
+    result.py            ToolResult envelope + ErrorCode enum
+    catalog.py           EVERY tool - one file to add a capability
+    context.py           ToolContext(backend, session, memory)
+  memory/                CustomerMemory - durable prefs in the backend blob
+  store/                 SessionStore (SQLite) - sessions + idempotency ledger
+  observability/         JSON logging · PII redaction · request-id context
+  prompts/system.md      versioned system prompt
+  api.py / cli.py        interfaces
+  web/index.html         zero-dependency streaming chat UI
 ```
 
-**Layering.** Each layer depends only on the one below and never skips:
-`cli/api → agent → {registry → catalog → backend}, memory, llm`. The agent loop
-knows nothing about HTTP or Groq; the tool layer knows nothing about the LLM wire
-format; the backend client knows nothing about tools. Swapping the LLM provider or
-the interface is a one-file change.
+Each layer depends only on the one below and never skips it. Swapping the model
+provider, the interface, or the backend transport is a one-file change behind a
+`Protocol`.
 
 ### The agent loop (`agent.py`)
 
-1. Build the system prompt: role + business rules + **memory block** (stored
-   preferences, allergies, order history, upcoming reservation) + current time.
-2. Replay `[system] + conversation transcript`.
-3. Up to `max_agent_steps` (8) iterations:
-   - call the LLM with the full tool catalog;
-   - no tool calls → return the text, done;
-   - otherwise dispatch each tool call, append the JSON result as a `tool`
-     message, record it in the `TurnTrace`, loop.
-4. Runaway loop → bail out with a safe message.
+Streams `TurnEvent`s so the **same loop drives the blocking API and the SSE
+endpoint**. Each round: call the model with the full tool catalog; a plain reply
+ends the turn; otherwise, for every tool call - check budgets, run the policy
+layer, dispatch, append the typed result, emit events. Three independent caps,
+each with its own `stopped_reason`:
 
-### Tool layer — defensive by construction
-
-`ToolRegistry.dispatch()` is the trust boundary between the model and the backend.
-It **never raises**; every failure becomes a JSON `{"error": ...}` the model reads
-and reacts to:
-
-| LLM misbehaviour | Result |
+| cap | guards against |
 |---|---|
-| Hallucinated tool name | `{"error": "Unknown tool 'x'. Available: ..."}` |
-| Arguments aren't valid JSON / partial JSON | `{"error": "... not valid JSON ..."}` |
-| Arguments valid JSON but wrong shape | Pydantic `ValidationError` → readable field list |
-| Backend rejects it (409/422/…) | `{"error": <detail>, "status_code": <code>}` |
-| Any other exception in the tool | `{"error": "<Type>: <msg>"}` |
-| Provider (Groq) rejects the model's own tool call | `MalformedToolCall` → loop feeds the reason back and lets the model retry |
+| `max_agent_steps` (8) | infinite think-loops |
+| `max_tool_calls` (12) | tool-call spam |
+| `max_mutations` (6) | runaway writes (bookings, orders) |
 
-**Adding a tool is a one-file change:** write a Pydantic args model + a function
-decorated with `@registry.register(name, description, ArgsModel)` in
-`tools/catalog.py`. The JSON schema sent to the LLM is generated from the model;
-dispatch, validation and error-shaping are automatic.
+A provider-rejected tool call (`MalformedToolCall`) is fed back to the model as a
+correction and retried, counted against the step budget.
 
-`customer_id` is always taken from the session, never a tool argument, so the agent
-cannot act on behalf of another customer.
+### Tool layer - defensive by construction
 
-### Memory — durable vs. in-conversation
+`ToolRegistry.dispatch` **never raises**. Every outcome is a `ToolResult(ok,
+message, data, error_code, http_status)`:
 
-- **`Conversation`** (`conversation.py`): the message list for one chat. Ephemeral.
-- **`CustomerMemory`** (`memory/customer_memory.py`): cross-session knowledge,
-  persisted in the backend's open `customers.preferences` JSON blob. Schema we own:
+| failure | `error_code` |
+|---|---|
+| hallucinated tool name | `unknown_tool` |
+| arguments not valid JSON | `bad_json` |
+| arguments wrong shape (Pydantic) | `bad_arguments` |
+| unparseable date/time | `bad_datetime` |
+| acting on another customer's reservation | `ownership_denied` |
+| backend 4xx / 5xx | `upstream_error` / `upstream_unavailable` |
+| anything unexpected in a tool | `internal_error` |
 
-  ```json
-  { "seating": "outdoor",
-    "dietary": ["vegetarian"],
-    "allergies": ["nuts"],
-    "notes": ["celebrates anniversary in March"] }
-  ```
+**Adding a tool is one function + one args model** in `catalog.py`; the JSON
+schema, validation, error shaping, and the mutation/destructive classification
+all follow from `@registry.register`. `customer_id` is always taken from the
+session; every tool that takes a `reservation_id`/`order_id` re-verifies
+ownership against the backend before it acts.
 
-  Loaded once at session start (preferences + reservations + orders, joined with
-  the menu for dish names). Written only via the `remember_preference` tool, which
-  the prompt tells the model to use for *lasting* preferences, not one-off
-  requests. Allergies are always folded into the order guard, whether or not the
-  model passes `avoid_tags`.
+### Policy layer - deterministic guardrails (`policy.py`)
 
-### Smart table assignment
+Pure functions of `(tool call, conversation, memory)`, unit-tested with no LLM:
 
-`book_table` checks availability, keeps tables that fit the party, honours the
-customer's stored `seating` preference when they didn't specify one, falls back to
-any area if the preferred one is full (and says so), then books the **smallest**
-fitting table to maximise utilisation.
+- **Confirmation** - `cancel_reservation` / `remove_order_item` are blocked until
+  the customer explicitly asks or confirms. The block is returned to the model as
+  a tool result, so it produces a natural "are you sure?" turn; the customer's
+  "yes" clears the gate next turn.
+- **Booking precondition** - `book_table` is blocked until seating is resolved
+  (an explicit choice in the conversation, or a stored preference). New guests
+  are asked once; returning guests sail through.
 
-`change_reservation` encodes the correct move sequence so the model can't get it
-wrong: release the old booking, find a table for the new time/party/area, re-book.
-If the cancel is refused (2-hour cutoff) or nothing fits, the original booking is
-restored untouched — the agent never ends up creating a duplicate reservation.
+### Memory - durable vs. in-conversation
 
-### Reasoning trace
+`CustomerMemory` persists in the backend's open `customers.preferences` blob
+(schema we own: `seating`, `dietary[]`, `allergies[]`, `notes[]`) and is kept
+separate from the per-session `Conversation`. Written only via
+`remember_preference` (the prompt reserves it for *lasting* preferences).
+Allergies are always folded into the order guard, `avoid_tags` or not.
 
-Every turn produces a `TurnTrace` (LLM rounds, each tool call + arguments + result
-+ ok/error, final reply). `--verbose` on the CLI and `"verbose": true` on the REST
-endpoint print it, so a manager can audit a conversation after the fact.
+### Persistence & idempotency (`store/`)
+
+SQLite (stdlib, WAL). Sessions and full transcripts survive a restart. A
+`(session_id, client_message_id)` ledger makes a retried `POST` return the
+stored reply instead of re-running mutations; a reused id with a different body
+is a `409`.
+
+### Smart booking
+
+`book_table` picks the smallest available table that fits, honouring stored
+seating, falling back to any area if the preferred one is full (and saying so).
+`change_reservation` encodes the move sequence so the model can't fumble it -
+release the old booking, find a table, re-book; if the cancel is refused or
+nothing fits, the original is restored untouched (no duplicate reservations).
+
+### Observability
+
+Every request and turn logs one structured JSON line with a request-id (context
+var, echoed as `X-Request-ID`); a redaction pass scrubs emails, phone numbers
+and tokens from messages and exception strings. Security headers (CSP, nosniff,
+frame-deny) on every response.
 
 ---
 
-## Decisions
+## Tests
 
-| Choice | What | Why |
-|---|---|---|
-| **LLM** | Groq, `openai/gpt-oss-20b` | Key already provided; fast; native OpenAI-style tool calling means no client-side tool-call parsing. Provider is swappable behind `LLMClient`. |
-| **LLM transport** | raw `httpx`, no SDK | One endpoint, one call shape. Avoids pulling the OpenAI/Groq SDK for ~30 lines of HTTP; keeps the dependency surface small. |
-| **Tool schemas** | Pydantic → `model_json_schema()` | Single source of truth: the same model validates the model's arguments and generates its documentation. |
-| **Memory storage** | the backend's `preferences` blob | The exercise's intended store; survives restarts; no extra datastore to run. Derived history is recomputed on load rather than cached. |
-| **Interface** | CLI (primary) + REST + a static browser UI | CLI is the fastest demo; REST shows the interface layer is thin; `web/index.html` is a dependency-free chat page (vanilla JS, served by the API) for a nicer walkthrough. |
-| **Conversation state** | in-memory | Single-process demo. A real deployment would back `Conversation` with Redis/DB; nothing else changes. |
-| **Datetime parsing** | `get_current_datetime` tool + `dateutil` fallback | The model is told to resolve relative times itself; loose phrases ("tomorrow around 8") are still snapped to a valid 30-min slot defensively. The backend has the final say. |
+```bash
+pytest            # 109 tests, ~0.9s, no network, no Docker
+```
+
+- **tool layer** - dispatch safety (unknown tool / bad JSON / bad args), ownership,
+  smart assignment, order guards, `change_reservation` restore path
+- **policy** - confirmation + booking gates, pure
+- **agent loop** - end-to-end with `ScriptedLLM` + `FakeBackend`: booking→ordering
+  flow, memory in the prompt, all three budgets, malformed-call recovery, SSE events
+- **service** - persistence, idempotent replay + conflict, memory refresh, streaming
+- **store** - roundtrip, ledger, purge, cross-instance persistence
+- **api** - `TestClient`: health/ready, security headers, full HTTP conversation, SSE
+- **clients** - `GroqClient` (httpx MockTransport: parsing, 429 retry, tool_use_failed)
+  and `RestaurantClient` (request shaping, error mapping)
+- **observability** - redaction, structured records
+
+`ScriptedLLM` and `FakeBackend` (which implements the `BackendClient` protocol)
+mean the whole agent is exercised without a real model or a running backend.
+
+---
+
+## Decisions (short form - full version in [docs/DECISIONS.md](docs/DECISIONS.md))
+
+| choice | why |
+|---|---|
+| **hand-rolled loop**, not LangGraph/LangChain | the harness is the thing under review; a framework would hide the decision logic, budgets and recovery |
+| **Groq `openai/gpt-oss-20b`** via raw `httpx` | key provided; native tool calling; provider is a one-file swap behind `LLMClient` |
+| **synchronous core** | readability; the workload is a short sequential HTTP chain, not high-concurrency fan-out |
+| **memory in the `preferences` blob** | the intended store; survives restarts; no second datastore |
+| **SQLite** for sessions | zero-ops for a local build; trivial schema. Production -> managed Postgres |
+| **policy in code, not the prompt** | a cancellation guard shouldn't be probabilistic |
+| **`ToolResult` + `ErrorCode`** | typed outcomes are testable and stable; `message` doubles as a model-facing summary |
+| **idempotency keys** | a reception agent mutates state; a dropped response + retry must not double-book |
 
 ## Assumptions
 
-- **Naive local time.** All datetimes are the restaurant's wall-clock time, matching
-  the backend. "tonight/tomorrow" resolve against the server clock.
-- **Slot snapping.** A requested time is snapped to the nearest valid 30-minute
-  slot (12:00–22:30). If that still violates a rule, the backend error is relayed
-  to the customer.
-- **Table choice.** With no explicit area and no stored preference, any location is
-  fair game; the smallest fitting table wins.
-- **Memory writes** happen only when the customer states a durable preference or
-  allergy — not for one-off requests ("outside just this once").
-- **"That reservation"** refers to the one created or last acted on in the current
-  conversation (`Session.active_reservation_id`); if there is none, the agent asks.
-- **New customers** are created on first contact from the CLI/REST identity step;
-  a name is requested if the lookup misses.
-- **One customer per session.** Phone/email identifies the customer up front and is
-  not re-checked mid-conversation.
+- Naive local time throughout, matching the backend. "tonight"/"tomorrow" resolve
+  against the server clock; a loose time is snapped to the nearest valid 30-minute
+  slot (12:00-22:30) and the backend still has the final say.
+- With no explicit area and no stored preference, `book_table` is gated once, then
+  the smallest fitting table wins.
+- Memory is written only on an explicit lasting-preference statement.
+- "That reservation" = the one created or last acted on this conversation; if
+  there is none, the agent asks.
+- One customer per session; phone/email identifies them up front and is not
+  re-checked. **A real deployment needs actual authentication** - the exercise
+  identifies but does not authenticate.
 
 ## Known limitations
 
-- Groq's free tier is ~8k tokens/min; the full tool catalog is sent every turn, so
-  a long conversation can hit a rate limit. The client retries with backoff
-  (honouring Groq's `retry-after`), but sustained use needs a paid tier or a
-  trimmed tool set.
-- Conversation history is unbounded — no summarisation/truncation yet.
-- Dish-name matching is exact → substring → token-overlap; good for 12 items, not a
-  fuzzy search engine.
+- Groq's free tier is ~8k tokens/min and the full tool catalog is sent every
+  turn; long conversations can rate-limit. `GroqClient` retries with backoff
+  (honouring `retry-after`); sustained use needs a paid tier or a trimmed toolset.
+- Conversation history is unbounded - no summarisation / truncation yet.
+- SQLite is single-writer; run one agent process. Production -> a managed
+  Postgres-compatible store.
+- Dish-name matching is exact -> substring -> token-overlap; fine for a dozen
+  items, not a fuzzy search engine.
+- The SSE endpoint intentionally skips the idempotency ledger (streaming and
+  replay don't compose); use the blocking endpoint where exactly-once matters.

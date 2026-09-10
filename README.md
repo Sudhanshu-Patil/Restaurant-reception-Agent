@@ -1,54 +1,49 @@
 # Restaurant Reception Agent — submission
 
-Two projects:
-
 | Folder | What |
 |---|---|
-| [`restaurant-api/`](restaurant-api/) | The **provided** backend (FastAPI + Postgres, Dockerised). Unmodified — byte-for-byte the original zip. |
-| [`restaurant-agent/`](restaurant-agent/) | **My work** — the conversational AI agent built on top of it. See [`restaurant-agent/README.md`](restaurant-agent/README.md) for architecture, decisions and assumptions. |
+| [`restaurant-agent/`](restaurant-agent/) | **My work** — a hand-rolled AI reception agent (multi-turn booking, ordering, menu Q&A, customer memory). Full docs: **[restaurant-agent/README.md](restaurant-agent/README.md)**, [ARCHITECTURE](restaurant-agent/docs/ARCHITECTURE.md), [DECISIONS](restaurant-agent/docs/DECISIONS.md). |
+| [`restaurant-api/`](restaurant-api/) | The **provided** backend (FastAPI + Postgres, Dockerised). Unmodified — byte-for-byte the original zip. Treated as a black box over HTTP. |
 
-## Run it (same as the development setup)
-
-### 1. Start the backend
+## Run everything (one command)
 
 ```bash
-cd restaurant-api
+export GROQ_API_KEY=...            # or put it in a .env file next to this README
 docker compose up -d --build
-curl http://localhost:8000/health          # {"status":"ok"}
 ```
 
-### 2. Set up the agent
+- **Agent** — chat UI + REST + SSE: http://localhost:8100 (API docs at `/docs`)
+- **Backend** — http://localhost:8000
+
+The agent auto-migrates its SQLite store; the backend seeds itself. Both come up healthy.
+
+## Run the agent locally (Python 3.10+)
 
 ```bash
-cd ../restaurant-agent
-python -m venv .venv
-source .venv/Scripts/activate               # Windows: .venv\Scripts\activate  |  macOS/Linux: source .venv/bin/activate
-pip install -r requirements.txt
-
-cp .env.example .env
-# then edit .env and set GROQ_API_KEY (a working key ships in the exercise's
-# original restaurant-api/.env; any Groq key works — model is openai/gpt-oss-20b)
-```
-
-### 3. Talk to it
-
-```bash
-# CLI
-python -m agent.cli --phone "+91-9876543210" --verbose
-
-# or browser UI + REST
-uvicorn agent.api:app --port 8100     # then open http://localhost:8100
-```
-
-### Tests (no backend, no LLM, no network)
-
-```bash
+cd restaurant-api && docker compose up -d --build && cd ..     # provided backend only
 cd restaurant-agent
-pytest            # 26 tests
+python -m venv .venv && source .venv/Scripts/activate          # or .venv/bin/activate
+pip install -e ".[dev]"
+cp .env.example .env                                           # set GROQ_API_KEY
+
+make run                              # uvicorn :8100
+make cli PHONE="+91-9876543210"       # interactive CLI
+make check                            # ruff + mypy --strict + pytest (coverage gate)
 ```
+
+## At a glance
+
+- **Harness, not framework** — a small streamed tool-calling loop behind a
+  provider-agnostic `LLMClient`; decorator tool registry; deterministic
+  confirmation / booking guardrails in code; typed `ToolResult` + `ErrorCode`.
+- **Production concerns** — SQLite session persistence, message idempotency keys,
+  three independent loop budgets, ownership checks, structured JSON logging with
+  PII redaction, security headers, SSE streaming, `/health` + `/ready`.
+- **Tested** — 109 tests (~1s, no network), `mypy --strict` and `ruff` clean, CI
+  on Python 3.10 & 3.12, ~90% coverage gate.
 
 ## Requirements
 
 - Docker + Docker Compose
-- Python 3.10+
+- Python 3.10+ (for the local flow)
 - A Groq API key
