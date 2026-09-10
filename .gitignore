@@ -12,3 +12,8 @@ venv/
 # macOS archive cruft
 __MACOSX/
 .DS_Store
+
+*.egg-info/
+build/
+dist/
+data/
