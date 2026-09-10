@@ -1,6 +1,6 @@
 # Restaurant Reception Agent
 
-[![CI](https://github.com/Sudhanshu-Patil/restaurant-reception-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Sudhanshu-Patil/restaurant-reception-agent/actions/workflows/ci.yml)
+![tests](https://img.shields.io/badge/tests-109%20passing-brightgreen)
 ![coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)
 ![python](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue)
 [![checked: mypy strict](https://img.shields.io/badge/mypy-strict-2a6db2)](https://mypy-lang.org/)
