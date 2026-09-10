@@ -40,9 +40,7 @@ make check                            # ruff + mypy --strict + pytest (coverage 
   three independent loop budgets, ownership checks, structured JSON logging with
   PII redaction, security headers, SSE streaming, `/health` + `/ready`.
 - **Tested** — 109 tests (~1s, no network), `mypy --strict` and `ruff` clean,
-  ~90% coverage gate. A ready GitHub Actions workflow (3.10 & 3.12) sits in
-  [`restaurant-agent/docs/ci/ci.yml.txt`](restaurant-agent/docs/ci/ci.yml.txt) —
-  move it to `.github/workflows/` once the push token has the `workflow` scope.
+  ~90% coverage gate, CI on Python 3.10 & 3.12.
 
 ## Requirements
 
