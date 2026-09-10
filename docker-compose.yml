@@ -1,0 +1,54 @@
+# One-command stack: provided backend (Postgres + FastAPI) + the reception agent.
+#
+#   export GROQ_API_KEY=...        # or put it in a .env file next to this one
+#   docker compose up -d --build
+#
+#   agent UI/API  -> http://localhost:8100   (chat UI at /, docs at /docs)
+#   backend API   -> http://localhost:8000
+#
+# The provided backend under ./restaurant-api is built unmodified.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: restaurant
+      POSTGRES_PASSWORD: restaurant
+      POSTGRES_DB: restaurant
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U restaurant -d restaurant"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  restaurant-api:
+    build: ./restaurant-api
+    environment:
+      DATABASE_URL: postgresql://restaurant:restaurant@db:5432/restaurant
+    command: >
+      bash -c "python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  agent:
+    build: ./restaurant-agent
+    environment:
+      RESTAURANT_API_URL: http://restaurant-api:8000
+      GROQ_API_KEY: ${GROQ_API_KEY:?set GROQ_API_KEY in the environment or a .env file}
+      MODEL: ${MODEL:-openai/gpt-oss-20b}
+      AGENT_DB_PATH: /data/agent.db
+    volumes:
+      - agentdata:/data
+    ports:
+      - "8100:8100"
+    depends_on:
+      - restaurant-api
+
+volumes:
+  pgdata:
+  agentdata:
