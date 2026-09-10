@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from agent.backend.client import RestaurantClient
 from agent.backend.errors import BackendError
+from agent.backend.protocol import BackendClient
 from agent.conversation import Session
 
 
@@ -12,7 +12,7 @@ class NewCustomerNeedsName(Exception):
 
 
 def resolve_customer(
-    backend: RestaurantClient,
+    backend: BackendClient,
     *,
     phone: str | None = None,
     email: str | None = None,

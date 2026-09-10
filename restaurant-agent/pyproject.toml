@@ -47,7 +47,7 @@ omit = ["agent/cli.py"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
-fail_under = 70
+fail_under = 88
 exclude_lines = [
     "pragma: no cover",
     "if __name__ == .__main__.:",

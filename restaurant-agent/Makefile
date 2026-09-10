@@ -36,7 +36,7 @@ cli:  ## Start the interactive CLI (set PHONE=...)
 
 .PHONY: openapi
 openapi:  ## Regenerate docs/openapi.json
-	$(PY) -m agent.tools_dev.export_openapi
+	$(PY) -m scripts.export_openapi
 
 .PHONY: help
 help:

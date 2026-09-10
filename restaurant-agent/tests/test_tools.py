@@ -169,3 +169,60 @@ def test_remove_order_item_verifies_it_belongs_to_the_reservation(call, backend)
     out = call("remove_order_item", order_id=999, reservation_id=rid)
     assert out["ok"] is False
     assert out["error_code"] == ErrorCode.OWNERSHIP_DENIED.value
+
+
+def test_remove_order_item_happy_path(call, backend):
+    rid = call("book_table", when="tomorrow 8:00pm", party_size=2)["data"]["reservation"]["id"]
+    added = call("add_items_to_reservation", reservation_id=rid, items=[{"name": "samosa"}])
+    order_id = added["data"]["added"][0]["order_id"]
+    out = call("remove_order_item", order_id=order_id, reservation_id=rid)
+    assert out["ok"] is True
+    assert backend.list_order_items(rid) == []
+
+
+# -- the remaining read-only + explicit tools --------------------------------
+def test_get_current_datetime(call):
+    out = call("get_current_datetime")
+    assert out["ok"] is True
+    assert "now" in out["data"] and "weekday" in out["data"]
+
+
+def test_create_reservation_explicit_table(call, ctx):
+    out = call("create_reservation", table_id=5, when="tomorrow 7:00pm", party_size=3)
+    assert out["ok"] is True
+    assert out["data"]["reservation"]["table_id"] == 5
+    assert ctx.session.active_reservation_id == out["data"]["reservation"]["id"]
+
+
+def test_list_my_reservations_and_history(call):
+    out = call("list_my_reservations")
+    assert out["ok"] is True
+    assert isinstance(out["data"]["reservations"], list)
+
+    hist = call("list_order_history")
+    assert hist["ok"] is True
+    assert {h["item"] for h in hist["data"]["history"]} == {"Paneer Tikka", "Dal Makhani"}
+
+
+def test_add_items_needs_an_active_reservation(call):
+    out = call("add_items_to_reservation", items=[{"name": "samosa"}])
+    assert out["ok"] is False
+    assert out["error_code"] == ErrorCode.NO_ACTIVE_RESERVATION.value
+
+
+def test_change_reservation_needs_a_target(call):
+    out = call("change_reservation", when="tomorrow 9pm")
+    assert out["ok"] is False
+    assert out["error_code"] == ErrorCode.NO_ACTIVE_RESERVATION.value
+
+
+def test_change_reservation_restores_original_when_no_table_fits(call, ctx, backend):
+    call("book_table", when="tomorrow 7:00pm", party_size=2, location="outdoor")
+    # ask to grow the party past every table's capacity
+    out = call("change_reservation", party_size=99)
+    assert out["ok"] is False
+    assert out["error_code"] == ErrorCode.NO_TABLE_AVAILABLE.value
+    # the original was cancelled then re-created; a confirmed booking still exists
+    confirmed = backend.list_customer_reservations(1, status="confirmed")
+    assert len(confirmed) == 1
+    assert ctx.session.active_reservation_id == confirmed[0]["id"]

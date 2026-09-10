@@ -1,65 +1,92 @@
-"""REST interface + a minimal browser chat UI.
+"""REST + SSE interface, and a static browser chat UI.
 
-    uvicorn agent.api:app --port 8100
+uvicorn agent.api:app --port 8100
 
-    GET  /                                -> single-page chat UI
-    POST /sessions                       {phone|email, name?}   -> {session_id, ...}
-    POST /sessions/{session_id}/messages {content, verbose?}    -> {reply, trace?}
-
-Sessions are held in memory — fine for a single-process demo.
+GET  /                                   single-page chat UI
+GET  /health                             liveness
+GET  /ready                              DB + upstream readiness
+POST /sessions                           {phone|email, name?}
+POST /sessions/{id}/messages             {content, client_message_id?, verbose?}
+POST /sessions/{id}/messages/stream      {content}  -> Server-Sent Events
 """
 
 from __future__ import annotations
 
-import uuid
-from dataclasses import dataclass
+import json
+import time
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from agent.agent import ReceptionAgent
-from agent.backend.client import RestaurantClient
 from agent.backend.errors import BackendError
 from agent.config import Settings
-from agent.conversation import Conversation, Session
-from agent.identity import NewCustomerNeedsName, resolve_customer
-from agent.llm.groq import GroqClient
-from agent.memory.customer_memory import CustomerMemory
-from agent.tools.catalog import registry
-
-_settings = Settings.from_env()
-_backend = RestaurantClient(_settings.restaurant_api_url, timeout=_settings.request_timeout)
-_llm = GroqClient(
-    _settings.groq_api_key,
-    _settings.model,
-    _settings.groq_base_url,
-    _settings.request_timeout,
+from agent.identity import NewCustomerNeedsName
+from agent.observability import (
+    bind_request_id,
+    configure_logging,
+    get_logger,
+    new_request_id,
 )
-_agent = ReceptionAgent(_llm, registry, _backend, _settings)
+from agent.service import AgentService, IdempotencyConflict, SessionNotFound
 
-app = FastAPI(title="Restaurant Reception Agent")
-
+configure_logging()
+_log = get_logger("agent.api")
 _WEB_DIR = Path(__file__).parent / "web"
 
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'"
+    ),
+}
 
-@app.get("/", include_in_schema=False)
-def index() -> FileResponse:
-    return FileResponse(_WEB_DIR / "index.html")
-
-
-@dataclass
-class _SessionState:
-    session: Session
-    memory: CustomerMemory
-    conversation: Conversation
-
-
-_SESSIONS: dict[str, _SessionState] = {}
+_service: AgentService | None = None
 
 
+def get_service() -> AgentService:
+    """Lazily built composition root; overridden in tests via dependency_overrides."""
+    global _service
+    if _service is None:
+        _service = AgentService.from_settings(Settings.from_env())
+    return _service
+
+
+class RequestContextMiddleware(BaseHTTPMiddleware):
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        request_id = request.headers.get("x-request-id") or new_request_id()
+        bind_request_id(request_id)
+        started = time.perf_counter()
+        response = await call_next(request)
+        _log.info(
+            "request",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+                "ms": round((time.perf_counter() - started) * 1000, 1),
+            },
+        )
+        response.headers["X-Request-ID"] = request_id
+        for header, value in _SECURITY_HEADERS.items():
+            response.headers.setdefault(header, value)
+        return response
+
+
+app = FastAPI(title="Restaurant Reception Agent", version="1.0.0")
+app.add_middleware(RequestContextMiddleware)
+
+
+# -- schemas -----------------------------------------------------------
 class StartSessionIn(BaseModel):
     phone: str | None = None
     email: str | None = None
@@ -68,38 +95,79 @@ class StartSessionIn(BaseModel):
 
 class MessageIn(BaseModel):
     content: str
+    client_message_id: str | None = None
     verbose: bool = False
 
 
+class StreamMessageIn(BaseModel):
+    content: str
+
+
+# -- routes ------------------------------------------------------
+@app.get("/", include_in_schema=False)
+def index() -> FileResponse:
+    return FileResponse(_WEB_DIR / "index.html")
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+def ready(service: AgentService = Depends(get_service)) -> dict[str, Any]:
+    checks = service.ready()
+    if not all(checks.values()):
+        raise HTTPException(503, {"ready": False, "checks": checks})
+    return {"ready": True, "checks": checks}
+
+
 @app.post("/sessions")
-def start_session(body: StartSessionIn) -> dict[str, Any]:
+def start_session(
+    body: StartSessionIn, service: AgentService = Depends(get_service)
+) -> dict[str, Any]:
     if not body.phone and not body.email:
         raise HTTPException(400, "phone or email is required")
     try:
-        session = resolve_customer(_backend, phone=body.phone, email=body.email, name=body.name)
+        return service.start_session(phone=body.phone, email=body.email, name=body.name)
     except NewCustomerNeedsName as exc:
-        raise HTTPException(400, "New customer - 'name' is required to create a profile") from exc
+        raise HTTPException(400, "New customer - 'name' is required") from exc
     except BackendError as exc:
         raise HTTPException(exc.status_code, exc.detail) from exc
 
-    memory = CustomerMemory(_backend, session.customer_id)
-    memory.load()
-    sid = uuid.uuid4().hex
-    _SESSIONS[sid] = _SessionState(session, memory, Conversation())
-    return {
-        "session_id": sid,
-        "customer": {"id": session.customer_id, "name": session.name},
-        "memory": memory.summary(),
-    }
-
 
 @app.post("/sessions/{session_id}/messages")
-def send_message(session_id: str, body: MessageIn) -> dict[str, Any]:
-    state = _SESSIONS.get(session_id)
-    if state is None:
-        raise HTTPException(404, "unknown session_id")
-    result = _agent.run_turn(body.content, state.conversation, state.session, state.memory)
-    out: dict[str, Any] = {"reply": result.reply, "stopped_reason": result.stopped_reason}
-    if body.verbose:
-        out["trace"] = result.trace.render()
-    return out
+def send_message(
+    session_id: str, body: MessageIn, service: AgentService = Depends(get_service)
+) -> dict[str, Any]:
+    try:
+        result = service.run_message(session_id, body.content, body.client_message_id)
+    except SessionNotFound as exc:
+        raise HTTPException(404, "unknown session_id") from exc
+    except IdempotencyConflict as exc:
+        raise HTTPException(409, "client_message_id reused with a different message") from exc
+    except BackendError as exc:
+        raise HTTPException(502, f"upstream error: {exc.detail}") from exc
+    if not body.verbose:
+        result.pop("trace", None)
+    return result
+
+
+@app.post("/sessions/{session_id}/messages/stream")
+def stream_message(
+    session_id: str, body: StreamMessageIn, service: AgentService = Depends(get_service)
+) -> StreamingResponse:
+    def emit() -> Iterator[str]:
+        try:
+            for event in service.stream_message(session_id, body.content):
+                yield event.to_sse()
+        except SessionNotFound:
+            yield _sse_error("unknown session_id")
+        except BackendError as exc:
+            yield _sse_error(f"upstream error: {exc.detail}")
+
+    return StreamingResponse(emit(), media_type="text/event-stream")
+
+
+def _sse_error(message: str) -> str:
+    return f"event: error\ndata: {json.dumps({'message': message})}\n\n"

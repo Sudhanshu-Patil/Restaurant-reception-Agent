@@ -45,17 +45,18 @@ def parse_when(text: str, now: datetime | None = None) -> datetime:
 
 
 def nearest_slot(dt: datetime) -> datetime:
-    """Snap a datetime to the closest valid 30-minute reservation slot."""
-    snapped = dt.replace(second=0, microsecond=0)
-    if snapped.minute < 15:
-        snapped = snapped.replace(minute=0)
-    elif snapped.minute < 45:
-        snapped = snapped.replace(minute=30)
+    """Snap a datetime to the closest valid 30-minute reservation slot (12:00-22:30)."""
+    base = dt.replace(second=0, microsecond=0)
+    if base.minute < 15:
+        snapped = base.replace(minute=0)
+    elif base.minute < 45:
+        snapped = base.replace(minute=30)
     else:
-        snapped = snapped.replace(minute=0) + timedelta(hours=1)
+        snapped = base.replace(minute=0) + timedelta(hours=1)
 
+    # Clamp to the service window on the originally requested day.
+    if snapped.date() > base.date() or (snapped.hour, snapped.minute) > SLOT_CLOSE:
+        return base.replace(hour=SLOT_CLOSE[0], minute=SLOT_CLOSE[1])
     if (snapped.hour, snapped.minute) < SLOT_OPEN:
-        snapped = snapped.replace(hour=SLOT_OPEN[0], minute=SLOT_OPEN[1])
-    elif (snapped.hour, snapped.minute) > SLOT_CLOSE:
-        snapped = snapped.replace(hour=SLOT_CLOSE[0], minute=SLOT_CLOSE[1])
+        return snapped.replace(hour=SLOT_OPEN[0], minute=SLOT_OPEN[1])
     return snapped
