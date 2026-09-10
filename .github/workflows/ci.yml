@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: lint · type · test (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: restaurant-agent
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: restaurant-agent/pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Ruff format
+        run: ruff format --check .
+
+      - name: Ruff lint
+        run: ruff check --output-format=github .
+
+      - name: Mypy (strict)
+        run: mypy agent
+
+      - name: Tests + coverage gate
+        run: pytest --cov=agent --cov-report=term-missing
