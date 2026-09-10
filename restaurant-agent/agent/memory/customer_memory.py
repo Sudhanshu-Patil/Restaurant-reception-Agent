@@ -18,19 +18,21 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import Any
 
-from agent.backend.client import RestaurantClient
+from agent.backend.protocol import BackendClient
 
 _LIST_KEYS = ("dietary", "allergies")
 
+Json = dict[str, Any]
+
 
 class CustomerMemory:
-    def __init__(self, backend: RestaurantClient, customer_id: int) -> None:
+    def __init__(self, backend: BackendClient, customer_id: int) -> None:
         self._backend = backend
         self._customer_id = customer_id
-        self.preferences: dict[str, Any] = {}
-        self._orders: list[dict] = []
-        self._reservations: list[dict] = []
-        self._menu_by_id: dict[int, dict] = {}
+        self.preferences: Json = {}
+        self._orders: list[Json] = []
+        self._reservations: list[Json] = []
+        self._menu_by_id: dict[int, Json] = {}
 
     # -- loading ---------------------------------------------------------
     def load(self) -> None:
@@ -43,6 +45,7 @@ class CustomerMemory:
     # -- writing -------------------------------------------------------
     def remember(self, key: str, value: str) -> None:
         """Persist a durable preference. Backend shallow-merges the patch."""
+        patch: Json
         if key in _LIST_KEYS:
             current = list(self.preferences.get(key, []))
             if value not in current:
@@ -68,8 +71,8 @@ class CustomerMemory:
             tags.add(a if a.startswith("contains-") else f"contains-{a}")
         return tags
 
-    def order_history(self) -> list[dict]:
-        agg: OrderedDict[int, dict] = OrderedDict()
+    def order_history(self) -> list[Json]:
+        agg: OrderedDict[int, Json] = OrderedDict()
         for o in self._orders:
             item = self._menu_by_id.get(o["menu_item_id"])
             name = item["name"] if item else f"item #{o['menu_item_id']}"

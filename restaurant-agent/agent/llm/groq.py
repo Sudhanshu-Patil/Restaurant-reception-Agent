@@ -78,7 +78,8 @@ class GroqClient:
                 last_error = f"unreachable: {exc}"
             else:
                 if resp.status_code < 400:
-                    return resp.json()
+                    data: dict[str, Any] = resp.json()
+                    return data
                 last_error = f"error {resp.status_code}: {resp.text}"
                 if _is_tool_use_failure(resp):
                     raise MalformedToolCall(_tool_failure_detail(resp))
@@ -96,14 +97,15 @@ def _is_tool_use_failure(resp: httpx.Response) -> bool:
     if resp.status_code != 400:
         return False
     try:
-        return resp.json().get("error", {}).get("code") == "tool_use_failed"
+        body = resp.json()
     except ValueError:
         return False
+    return bool(body.get("error", {}).get("code") == "tool_use_failed")
 
 
 def _tool_failure_detail(resp: httpx.Response) -> str:
     try:
-        return resp.json()["error"]["message"]
+        return str(resp.json()["error"]["message"])
     except (ValueError, KeyError):
         return resp.text
 

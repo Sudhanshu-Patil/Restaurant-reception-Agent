@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
+from typing import Any
+
 import pytest
+from agent.config import Settings
 from agent.conversation import Session
 from agent.memory.customer_memory import CustomerMemory
+from agent.tools.catalog import registry
 from agent.tools.context import ToolContext
 
 from tests.fakes import FakeBackend
@@ -26,5 +32,20 @@ def memory(backend: FakeBackend) -> CustomerMemory:
 
 
 @pytest.fixture
-def ctx(backend, priya_session, memory) -> ToolContext:
+def ctx(backend: FakeBackend, priya_session: Session, memory: CustomerMemory) -> ToolContext:
     return ToolContext(backend=backend, session=priya_session, memory=memory)
+
+
+@pytest.fixture
+def settings() -> Settings:
+    return Settings(groq_api_key="test-key", model="test-model", restaurant_api_url="http://x")
+
+
+@pytest.fixture
+def call(ctx: ToolContext) -> Callable[..., dict[str, Any]]:
+    """Dispatch a tool by name and return its result as a plain dict."""
+
+    def _call(name: str, **arguments: Any) -> dict[str, Any]:
+        return registry.dispatch(name, json.dumps(arguments), ctx).model_dump()
+
+    return _call

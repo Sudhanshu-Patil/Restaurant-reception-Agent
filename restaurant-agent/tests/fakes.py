@@ -1,14 +1,21 @@
-"""In-memory stand-in for the restaurant API, with just enough rule enforcement
-to exercise the agent without Docker or a network."""
+"""In-memory stand-in for the restaurant API.
+
+Implements the :class:`~agent.backend.protocol.BackendClient` surface with just
+enough rule enforcement (capacity, double-booking, 2-hour cancellation cutoff,
+unavailable items) to exercise the agent without Docker or a network.
+"""
 
 from __future__ import annotations
 
 import itertools
 from datetime import datetime, timedelta
+from typing import Any
 
 from agent.backend.errors import BackendError
 
-_MENU = [
+Json = dict[str, Any]
+
+_MENU: list[Json] = [
     {
         "id": 1,
         "name": "Paneer Tikka",
@@ -74,7 +81,7 @@ _MENU = [
     },
 ]
 
-_TABLES = [
+_TABLES: list[Json] = [
     {"id": 1, "table_number": 1, "capacity": 2, "location": "indoor"},
     {"id": 2, "table_number": 3, "capacity": 4, "location": "indoor"},
     {"id": 3, "table_number": 5, "capacity": 6, "location": "indoor"},
@@ -85,12 +92,10 @@ _TABLES = [
 
 
 class FakeBackend:
-    """Mirrors the subset of :class:`RestaurantClient` the agent uses."""
-
     def __init__(self) -> None:
-        self.menu = [dict(m) for m in _MENU]
-        self.tables = [dict(t) for t in _TABLES]
-        self.customers: dict[int, dict] = {
+        self.menu: list[Json] = [dict(m) for m in _MENU]
+        self.tables: list[Json] = [dict(t) for t in _TABLES]
+        self.customers: dict[int, Json] = {
             1: {
                 "id": 1,
                 "name": "Priya Sharma",
@@ -100,12 +105,12 @@ class FakeBackend:
                 "created_at": "2025-01-01T00:00:00",
             }
         }
-        self.reservations: dict[int, dict] = {}
-        self.orders: dict[int, dict] = {}
+        self.reservations: dict[int, Json] = {}
+        self.orders: dict[int, Json] = {}
         self._cust_ids = itertools.count(2)
         self._res_ids = itertools.count(1)
         self._ord_ids = itertools.count(1)
-        # a completed historical reservation + orders for Priya
+
         past = next(self._res_ids)
         self.reservations[past] = {
             "id": past,
@@ -132,14 +137,14 @@ class FakeBackend:
     # -- menu / tables ------------------------------------------------
     def list_menu(
         self,
-        category=None,
-        tags_any=None,
-        tags_all=None,
-        exclude_tags=None,
-        max_price=None,
-        available_only=True,
-    ):
-        out = []
+        category: str | None = None,
+        tags_any: list[str] | None = None,
+        tags_all: list[str] | None = None,
+        exclude_tags: list[str] | None = None,
+        max_price: float | None = None,
+        available_only: bool = True,
+    ) -> list[Json]:
+        out: list[Json] = []
         for m in self.menu:
             if available_only and not m["available"]:
                 continue
@@ -157,7 +162,9 @@ class FakeBackend:
             out.append(dict(m))
         return out
 
-    def list_tables(self, location=None, min_capacity=None):
+    def list_tables(
+        self, location: str | None = None, min_capacity: int | None = None
+    ) -> list[Json]:
         return [
             dict(t)
             for t in self.tables
@@ -166,7 +173,9 @@ class FakeBackend:
         ]
 
     # -- availability -----------------------------------------------
-    def check_availability(self, slot_datetime: datetime, party_size: int, location=None):
+    def check_availability(
+        self, slot_datetime: datetime, party_size: int, location: str | None = None
+    ) -> Json:
         iso = slot_datetime.isoformat()
         booked = {
             r["table_id"]
@@ -188,15 +197,21 @@ class FakeBackend:
         return {"slot_datetime": iso, "party_size": party_size, "available_tables": available}
 
     # -- customers -------------------------------------------------
-    def lookup_customer(self, phone=None, email=None):
+    def lookup_customer(self, phone: str | None = None, email: str | None = None) -> Json:
         for c in self.customers.values():
             if (phone and c.get("phone") == phone) or (email and c.get("email") == email):
                 return dict(c)
         raise BackendError(404, "Customer not found")
 
-    def create_customer(self, name, phone=None, email=None, preferences=None):
+    def create_customer(
+        self,
+        name: str,
+        phone: str | None = None,
+        email: str | None = None,
+        preferences: Json | None = None,
+    ) -> Json:
         cid = next(self._cust_ids)
-        c = {
+        c: Json = {
             "id": cid,
             "name": name,
             "phone": phone,
@@ -207,18 +222,18 @@ class FakeBackend:
         self.customers[cid] = c
         return dict(c)
 
-    def get_customer(self, customer_id: int):
+    def get_customer(self, customer_id: int) -> Json:
         try:
             return dict(self.customers[customer_id])
         except KeyError:
             raise BackendError(404, "Customer not found")
 
-    def update_preferences(self, customer_id: int, preferences: dict):
+    def update_preferences(self, customer_id: int, preferences: Json) -> Json:
         c = self.customers[customer_id]
         c["preferences"] = {**c.get("preferences", {}), **preferences}
         return dict(c)
 
-    def list_customer_reservations(self, customer_id: int, status=None):
+    def list_customer_reservations(self, customer_id: int, status: str | None = None) -> list[Json]:
         rows = [
             dict(r)
             for r in self.reservations.values()
@@ -226,14 +241,19 @@ class FakeBackend:
         ]
         return sorted(rows, key=lambda r: r["slot_datetime"], reverse=True)
 
-    def list_customer_orders(self, customer_id: int):
+    def list_customer_orders(self, customer_id: int) -> list[Json]:
         res_ids = {r["id"] for r in self.reservations.values() if r["customer_id"] == customer_id}
         return [dict(o) for o in self.orders.values() if o["reservation_id"] in res_ids]
 
     # -- reservations --------------------------------------------
     def create_reservation(
-        self, customer_id, table_id, slot_datetime: datetime, party_size, special_requests=None
-    ):
+        self,
+        customer_id: int,
+        table_id: int,
+        slot_datetime: datetime,
+        party_size: int,
+        special_requests: str | None = None,
+    ) -> Json:
         iso = slot_datetime.isoformat()
         table = next((t for t in self.tables if t["id"] == table_id), None)
         if table is None:
@@ -249,7 +269,7 @@ class FakeBackend:
         if clash:
             raise BackendError(409, f"Table {table['table_number']} is already booked")
         rid = next(self._res_ids)
-        row = {
+        row: Json = {
             "id": rid,
             "customer_id": customer_id,
             "table_id": table_id,
@@ -262,13 +282,13 @@ class FakeBackend:
         self.reservations[rid] = row
         return dict(row)
 
-    def get_reservation(self, reservation_id: int):
+    def get_reservation(self, reservation_id: int) -> Json:
         try:
             return dict(self.reservations[reservation_id])
         except KeyError:
             raise BackendError(404, "Reservation not found")
 
-    def cancel_reservation(self, reservation_id: int):
+    def cancel_reservation(self, reservation_id: int) -> Json:
         r = self.reservations.get(reservation_id)
         if r is None:
             raise BackendError(404, "Reservation not found")
@@ -281,7 +301,7 @@ class FakeBackend:
         return dict(r)
 
     # -- orders -------------------------------------------------
-    def add_order_item(self, reservation_id: int, menu_item_id: int, quantity: int = 1):
+    def add_order_item(self, reservation_id: int, menu_item_id: int, quantity: int = 1) -> Json:
         r = self.reservations.get(reservation_id)
         if r is None:
             raise BackendError(404, "Reservation not found")
@@ -293,7 +313,7 @@ class FakeBackend:
         if not item["available"]:
             raise BackendError(409, f"'{item['name']}' is currently unavailable")
         oid = next(self._ord_ids)
-        row = {
+        row: Json = {
             "id": oid,
             "reservation_id": reservation_id,
             "menu_item_id": menu_item_id,
@@ -303,10 +323,10 @@ class FakeBackend:
         self.orders[oid] = row
         return dict(row)
 
-    def list_order_items(self, reservation_id: int):
+    def list_order_items(self, reservation_id: int) -> list[Json]:
         return [dict(o) for o in self.orders.values() if o["reservation_id"] == reservation_id]
 
-    def remove_order_item(self, order_id: int):
+    def remove_order_item(self, order_id: int) -> None:
         if order_id not in self.orders:
             raise BackendError(404, "Order item not found")
         del self.orders[order_id]

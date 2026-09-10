@@ -1,59 +1,44 @@
 """The agent loop: turn a customer message into a reply by calling tools.
 
-Responsibilities kept out of here on purpose: HTTP (``backend``), model transport
-(``llm``), argument validation and error shaping (``registry``), durable state
-(``memory``). This module only orchestrates.
+Kept out of here on purpose: HTTP (``backend``), model transport (``llm``),
+argument validation and error shaping (``registry``), durable customer state
+(``memory``), and the confirmation / booking guardrails (``policy``). This module
+only orchestrates - and it does so as a stream of :class:`~agent.events.TurnEvent`
+so the same loop drives both the blocking API and the SSE endpoint.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterator
 from datetime import datetime
+from typing import Any
 
+from agent.backend.protocol import BackendClient
 from agent.config import Settings
 from agent.conversation import Conversation, Session
-from agent.llm.base import LLMClient, LLMMessage, MalformedToolCall
+from agent.events import TurnEvent
+from agent.llm.base import LLMClient, LLMMessage, MalformedToolCall, ToolCall
 from agent.memory.customer_memory import CustomerMemory
+from agent.policy import Decision
+from agent.policy import evaluate as default_policy
+from agent.prompts import render_system_prompt
 from agent.tools.context import ToolContext
-from agent.tools.registry import ToolRegistry
-from agent.trace import ToolInvocation, TurnTrace
+from agent.tools.registry import MUTATING_TOOLS, ToolRegistry
+from agent.trace import ToolInvocation, TurnResult, TurnTrace
 
-SYSTEM_PROMPT = """\
-You are the reception agent for a restaurant. You help customers book tables, manage \
-their orders, and answer menu questions, by calling the provided tools.
+Policy = Callable[[ToolCall, Conversation, CustomerMemory], Decision]
 
-You are already speaking with {name} (customer #{customer_id}). They are identified \
-and logged in. NEVER ask them for a phone number or email, and never say you can't \
-find their record — every booking and order tool already acts on their account.
-
-Rules:
-- Reservation slots are 30-minute increments from 12:00 to 22:30 inclusive.
-- Never invent table ids, reservation ids, menu items, prices, or availability. Get \
-them from a tool.
-- One request may need several tool calls in sequence (check availability, then book, \
-then add items).
-- Do exactly what was asked: if the customer asks you to *check* availability, report \
-what you found and wait — don't book until they say to.
-- To move or modify an existing booking (time, party size, seating), use \
-change_reservation. Never make a second reservation to "switch" something. If a change \
-is refused (e.g. within 2 hours of the slot), tell the customer their original \
-booking still stands and offer alternatives.
-- Interpret times yourself; do not interrogate the customer for an exact slot. \
-"tonight"/"this evening" means today; "around 8" in an evening context means 20:00. \
-Pass the time straight to the tools — they accept phrases like "today 8pm" or ISO and \
-snap to the nearest valid slot. Call get_current_datetime if you need today's date. \
-Only ask for the time if the customer gave none at all.
-- Only ask for genuinely missing details (e.g. party size if never stated).
-- When a tool result contains an "error" field, explain the problem to the customer \
-plainly and suggest a fix. Do not silently retry.
-- Always respect the customer's stored allergies and dietary preferences.
-- Keep replies warm and concise.
-
-Right now it is {now}.
-
-What we remember about {name}:
-{memory}
-"""
+_STEP_BUDGET_MSG = (
+    "Sorry - I couldn't finish that within a safe number of steps. "
+    "Could you rephrase or break it into parts?"
+)
+_TOOL_BUDGET_MSG = (
+    "I stopped before making more calls - this request went past the safe action limit."
+)
+_MUTATION_BUDGET_MSG = (
+    "I stopped before changing anything else - this request went past the safe change limit."
+)
 
 
 class ReceptionAgent:
@@ -61,13 +46,27 @@ class ReceptionAgent:
         self,
         llm: LLMClient,
         registry: ToolRegistry,
-        backend,
+        backend: BackendClient,
         settings: Settings,
+        *,
+        policy: Policy = default_policy,
     ) -> None:
         self._llm = llm
         self._registry = registry
         self._backend = backend
         self._settings = settings
+        self._policy = policy
+
+    # -- public API -------------------------------------------------------
+    def turn(
+        self,
+        user_message: str,
+        conversation: Conversation,
+        session: Session,
+        memory: CustomerMemory,
+    ) -> TurnRunner:
+        """A per-turn runner. Call ``.events()`` (stream) or hand it to ``run_turn``."""
+        return TurnRunner(self, user_message, conversation, session, memory)
 
     def run_turn(
         self,
@@ -75,85 +74,151 @@ class ReceptionAgent:
         conversation: Conversation,
         session: Session,
         memory: CustomerMemory,
-    ) -> tuple[str, TurnTrace]:
-        """Process one customer message; return (reply, trace)."""
-        trace = TurnTrace(user_message=user_message)
-        ctx = ToolContext(backend=self._backend, session=session, memory=memory)
+    ) -> TurnResult:
+        """Process one message, blocking until done."""
+        runner = self.turn(user_message, conversation, session, memory)
+        for _ in runner.events():
+            pass
+        return TurnResult(runner.reply, runner.trace)
 
-        conversation.add_user(user_message)
-        messages = [
-            {"role": "system", "content": _system_prompt(session, memory)},
-            *conversation.messages,
+    def stream_turn(
+        self,
+        user_message: str,
+        conversation: Conversation,
+        session: Session,
+        memory: CustomerMemory,
+    ) -> Iterator[TurnEvent]:
+        yield from self.turn(user_message, conversation, session, memory).events()
+
+    # -- internals -----------------------------------------------------
+    def _system_prompt(self, session: Session, memory: CustomerMemory) -> str:
+        return render_system_prompt(
+            name=session.name,
+            customer_id=session.customer_id,
+            now=datetime.now().strftime("%A %Y-%m-%d %H:%M"),
+            memory=memory.summary(),
+        )
+
+
+class TurnRunner:
+    """Runs a single turn and exposes it as a stream of events plus a final trace."""
+
+    def __init__(
+        self,
+        agent: ReceptionAgent,
+        user_message: str,
+        conversation: Conversation,
+        session: Session,
+        memory: CustomerMemory,
+    ) -> None:
+        self._agent = agent
+        self._user_message = user_message
+        self._conversation = conversation
+        self._session = session
+        self._memory = memory
+        self.trace = TurnTrace(user_message=user_message)
+        self.reply = ""
+
+    def events(self) -> Iterator[TurnEvent]:
+        agent = self._agent
+        settings = agent._settings
+        trace = self.trace
+        ctx = ToolContext(backend=agent._backend, session=self._session, memory=self._memory)
+
+        self._conversation.add_user(self._user_message)
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": agent._system_prompt(self._session, self._memory)},
+            *self._conversation.messages,
         ]
-        specs = self._registry.specs()
+        specs = agent._registry.specs()
 
-        for _ in range(self._settings.max_agent_steps):
+        while trace.llm_rounds < settings.max_agent_steps:
             trace.llm_rounds += 1
             try:
-                reply = self._llm.complete(messages, specs)
+                reply = agent._llm.complete(messages, specs)
             except MalformedToolCall as exc:
-                correction = {
-                    "role": "system",
-                    "content": (
-                        "Your last tool call was rejected as invalid: "
-                        f"{exc.detail}. Re-issue it using exactly the documented "
-                        "argument names and types."
-                    ),
-                }
-                messages.append(correction)
-                conversation.add_raw(correction)
-                trace.steps.append(
-                    ToolInvocation(
-                        name="(rejected tool call)",
-                        arguments="",
-                        result=exc.detail,
-                        ok=False,
-                    )
-                )
+                yield self._recover_from_malformed_call(messages, exc)
                 continue
 
             assistant_msg = _assistant_to_dict(reply)
             messages.append(assistant_msg)
-            conversation.add_raw(assistant_msg)
+            self._conversation.add_raw(assistant_msg)
 
             if not reply.tool_calls:
-                trace.final_response = reply.content or ""
-                return trace.final_response, trace
+                yield from self._finish(reply.content or "", "completed")
+                return
 
             for call in reply.tool_calls:
-                result = self._registry.dispatch(call.name, call.arguments, ctx)
-                tool_msg = {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": result,
-                }
-                messages.append(tool_msg)
-                conversation.add_raw(tool_msg)
-                trace.steps.append(
-                    ToolInvocation(
-                        name=call.name,
-                        arguments=call.arguments,
-                        result=result,
-                        ok=not _is_error(result),
-                    )
-                )
+                budget_stop = self._budget_check(call)
+                if budget_stop is not None:
+                    reason, text = budget_stop
+                    yield from self._finish(text, reason)
+                    return
+                yield from self._run_tool_call(call, ctx, messages)
 
-        fallback = "Sorry — I couldn't finish that. Could you rephrase or break it into steps?"
-        trace.final_response = fallback
-        return fallback, trace
+        yield from self._finish(_STEP_BUDGET_MSG, "step_budget")
+
+    # -- steps ------------------------------------------------------
+    def _budget_check(self, call: ToolCall) -> tuple[str, str] | None:
+        trace = self.trace
+        settings = self._agent._settings
+        if trace.tool_calls >= settings.max_tool_calls:
+            return "tool_budget", _TOOL_BUDGET_MSG
+        if call.name in MUTATING_TOOLS and trace.mutations >= settings.max_mutations:
+            return "mutation_budget", _MUTATION_BUDGET_MSG
+        return None
+
+    def _run_tool_call(
+        self, call: ToolCall, ctx: ToolContext, messages: list[dict[str, Any]]
+    ) -> Iterator[TurnEvent]:
+        yield TurnEvent.tool_call(call.name, _safe_json(call.arguments))
+
+        decision = self._agent._policy(call, self._conversation, self._memory)
+        if not decision.allowed and decision.blocked_result is not None:
+            result = decision.blocked_result
+        else:
+            self.trace.tool_calls += 1
+            if call.name in MUTATING_TOOLS:
+                self.trace.mutations += 1
+            result = self._agent._registry.dispatch(call.name, call.arguments, ctx)
+
+        payload = result.to_json()
+        tool_msg = {"role": "tool", "tool_call_id": call.id, "content": payload}
+        messages.append(tool_msg)
+        self._conversation.add_raw(tool_msg)
+        self.trace.steps.append(ToolInvocation(call.name, call.arguments, payload, ok=result.ok))
+        code = result.error_code if isinstance(result.error_code, str) else None
+        yield TurnEvent.tool_result(
+            call.name, ok=result.ok, message=result.message, error_code=code
+        )
+
+    def _recover_from_malformed_call(
+        self, messages: list[dict[str, Any]], exc: MalformedToolCall
+    ) -> TurnEvent:
+        correction = {
+            "role": "system",
+            "content": (
+                "Your last tool call was rejected as schema-invalid: "
+                f"{exc.detail}. Re-issue it using exactly the documented argument names."
+            ),
+        }
+        messages.append(correction)
+        self._conversation.add_raw(correction)
+        self.trace.steps.append(ToolInvocation("(rejected tool call)", "", exc.detail, ok=False))
+        return TurnEvent.notice(
+            f"Provider rejected a tool call ({exc.detail}); asking the model to retry."
+        )
+
+    def _finish(self, text: str, reason: str) -> Iterator[TurnEvent]:
+        self.reply = text
+        self.trace.final_response = text
+        self.trace.stopped_reason = reason
+        yield TurnEvent.message(text)
+        yield TurnEvent.done(reason, self.trace.render())
 
 
-def _system_prompt(session: Session, memory: CustomerMemory) -> str:
-    return SYSTEM_PROMPT.format(
-        now=datetime.now().strftime("%A %Y-%m-%d %H:%M"),
-        name=session.name,
-        customer_id=session.customer_id,
-        memory=memory.summary(),
-    )
-
-
-def _assistant_to_dict(msg: LLMMessage) -> dict:
-    out: dict = {"role": "assistant", "content": msg.content or ""}
+def _assistant_to_dict(msg: LLMMessage) -> dict[str, Any]:
+    out: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
     if msg.tool_calls:
         out["tool_calls"] = [
             {
@@ -166,8 +231,9 @@ def _assistant_to_dict(msg: LLMMessage) -> dict:
     return out
 
 
-def _is_error(tool_result: str) -> bool:
+def _safe_json(raw: str) -> dict[str, Any]:
     try:
-        return isinstance(json.loads(tool_result), dict) and "error" in json.loads(tool_result)
-    except (ValueError, TypeError):
-        return False
+        parsed = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}

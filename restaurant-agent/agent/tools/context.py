@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agent.backend.client import RestaurantClient
+from agent.backend.protocol import BackendClient
 from agent.conversation import Session
 from agent.memory.customer_memory import CustomerMemory
 
 
 @dataclass
 class ToolContext:
-    backend: RestaurantClient
+    backend: BackendClient
     session: Session
     memory: CustomerMemory

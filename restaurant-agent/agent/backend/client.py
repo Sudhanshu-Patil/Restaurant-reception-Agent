@@ -129,7 +129,7 @@ class RestaurantClient:
         name: str,
         phone: str | None = None,
         email: str | None = None,
-        preferences: dict | None = None,
+        preferences: dict[str, Any] | None = None,
     ) -> JSON:
         body = _drop_none({"name": name, "phone": phone, "email": email})
         body["preferences"] = preferences or {}
@@ -138,7 +138,7 @@ class RestaurantClient:
     def get_customer(self, customer_id: int) -> JSON:
         return self._request("GET", f"/customers/{customer_id}")
 
-    def update_preferences(self, customer_id: int, preferences: dict) -> JSON:
+    def update_preferences(self, customer_id: int, preferences: dict[str, Any]) -> JSON:
         return self._request(
             "PATCH",
             f"/customers/{customer_id}/preferences",

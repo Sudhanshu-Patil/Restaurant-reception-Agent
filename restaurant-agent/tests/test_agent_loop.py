@@ -1,30 +1,26 @@
-"""End-to-end agent loop driven by a scripted LLM — no network."""
+"""End-to-end agent loop driven by a scripted LLM - no network."""
 
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 from agent.agent import ReceptionAgent
-from agent.config import Settings
 from agent.conversation import Conversation
 from agent.llm.base import LLMMessage, MalformedToolCall, ToolCall
 from agent.llm.stub import ScriptedLLM
 from agent.tools.catalog import registry
 
 
-def _settings() -> Settings:
-    return Settings(groq_api_key="x", model="m", restaurant_api_url="http://x")
-
-
-def _tc(call_id, name, **args):
+def _tc(call_id: str, name: str, **args: object) -> ToolCall:
     return ToolCall(id=call_id, name=name, arguments=json.dumps(args))
 
 
-def _make_agent(llm, backend):
-    return ReceptionAgent(llm, registry, backend, _settings())
+def _agent(llm: ScriptedLLM, backend, settings) -> ReceptionAgent:
+    return ReceptionAgent(llm, registry, backend, settings)
 
 
-def test_booking_then_ordering_flow(backend, priya_session, memory):
+def test_booking_then_ordering_flow(backend, priya_session, memory, settings):
     llm = ScriptedLLM(
         [
             LLMMessage(tool_calls=[_tc("1", "book_table", when="tomorrow 8:00pm", party_size=3)]),
@@ -43,72 +39,112 @@ def test_booking_then_ordering_flow(backend, priya_session, memory):
             LLMMessage(content="Booked table 7 outside and added your usuals. See you at 8!"),
         ]
     )
-    agent = _make_agent(llm, backend)
-    convo = Conversation()
-
-    reply, trace = agent.run_turn(
+    result = _agent(llm, backend, settings).run_turn(
         "Book a table for 3 tomorrow at 8 and add one paneer tikka and two dal makhani",
-        convo,
+        Conversation(),
         priya_session,
         memory,
     )
 
-    assert "8" in reply
-    assert trace.llm_rounds == 3
-    assert [s.name for s in trace.steps] == ["book_table", "add_items_to_reservation"]
-    assert all(s.ok for s in trace.steps)
+    assert "8" in result.reply
+    assert result.trace.llm_rounds == 3
+    assert result.trace.stopped_reason == "completed"
+    assert [s.name for s in result.trace.steps] == ["book_table", "add_items_to_reservation"]
+    assert all(s.ok for s in result.trace.steps)
+    assert result.trace.mutations == 2
 
-    # the booking really happened in the backend
     reservations = backend.list_customer_reservations(1, status="confirmed")
     assert len(reservations) == 1
-    orders = backend.list_order_items(reservations[0]["id"])
-    assert sum(o["quantity"] for o in orders) == 3
+    assert sum(o["quantity"] for o in backend.list_order_items(reservations[0]["id"])) == 3
 
 
-def test_system_prompt_carries_memory(backend, priya_session, memory):
+def test_system_prompt_carries_memory(backend, priya_session, memory, settings):
     llm = ScriptedLLM([LLMMessage(content="hi")])
-    agent = _make_agent(llm, backend)
-    agent.run_turn("hello", Conversation(), priya_session, memory)
-
+    _agent(llm, backend, settings).run_turn("hello", Conversation(), priya_session, memory)
     system_msg = llm.calls[0]["messages"][0]["content"]
     assert "outdoor" in system_msg
     assert "Paneer Tikka" in system_msg
 
 
-def test_runaway_tool_loop_is_capped(backend, priya_session, memory):
-    # LLM that always asks for another tool call — must not loop forever.
+def test_step_budget_caps_a_runaway_loop(backend, priya_session, memory, settings):
     llm = ScriptedLLM(
         [LLMMessage(tool_calls=[_tc(str(i), "get_current_datetime")]) for i in range(50)]
     )
-    agent = _make_agent(llm, backend)
-    reply, trace = agent.run_turn("what time is it", Conversation(), priya_session, memory)
-    assert trace.llm_rounds == _settings().max_agent_steps
-    assert "couldn't finish" in reply.lower()
+    result = _agent(llm, backend, settings).run_turn(
+        "what time is it", Conversation(), priya_session, memory
+    )
+    assert result.trace.llm_rounds == settings.max_agent_steps
+    assert result.trace.stopped_reason == "step_budget"
 
 
-def test_provider_rejected_tool_call_is_recovered(backend, priya_session, memory):
+def test_mutation_budget_stops_further_changes(backend, priya_session, memory, settings):
+    tight = replace(settings, max_mutations=1, max_tool_calls=20, max_agent_steps=20)
+    llm = ScriptedLLM(
+        [
+            LLMMessage(tool_calls=[_tc(str(i), "remember_preference", key="note", value=f"n{i}")])
+            for i in range(10)
+        ]
+    )
+    result = _agent(llm, backend, tight).run_turn(
+        "remember lots", Conversation(), priya_session, memory
+    )
+    assert result.trace.stopped_reason == "mutation_budget"
+    assert result.trace.mutations == 1
+
+
+def test_provider_rejected_tool_call_is_recovered(backend, priya_session, memory, settings):
     llm = ScriptedLLM(
         [
             MalformedToolCall("parameters for add_items_to_reservation did not match schema"),
-            LLMMessage(content="Sorry about that — could you confirm the dishes again?"),
+            LLMMessage(content="Sorry about that - could you confirm the dishes again?"),
         ]
     )
-    agent = _make_agent(llm, backend)
-    reply, trace = agent.run_turn("add food", Conversation(), priya_session, memory)
-    assert trace.llm_rounds == 2
-    assert trace.steps[0].ok is False
-    assert reply.startswith("Sorry about that")
+    result = _agent(llm, backend, settings).run_turn(
+        "add food", Conversation(), priya_session, memory
+    )
+    assert result.trace.llm_rounds == 2
+    assert result.trace.steps[0].ok is False
+    assert result.reply.startswith("Sorry about that")
 
 
-def test_unknown_tool_from_llm_is_surfaced_not_crashed(backend, priya_session, memory):
+def test_unknown_tool_from_llm_is_surfaced_not_crashed(backend, priya_session, memory, settings):
     llm = ScriptedLLM(
         [
-            LLMMessage(tool_calls=[_tc("1", "make_reservation_now")]),  # wrong name
-            LLMMessage(content="Sorry, let me try that a different way."),
+            LLMMessage(tool_calls=[_tc("1", "make_reservation_now")]),
+            LLMMessage(content="Let me try that a different way."),
         ]
     )
-    agent = _make_agent(llm, backend)
-    reply, trace = agent.run_turn("book me in", Conversation(), priya_session, memory)
-    assert trace.steps[0].name == "make_reservation_now"
-    assert trace.steps[0].ok is False
-    assert reply == "Sorry, let me try that a different way."
+    result = _agent(llm, backend, settings).run_turn(
+        "book me in", Conversation(), priya_session, memory
+    )
+    assert result.trace.steps[0].name == "make_reservation_now"
+    assert result.trace.steps[0].ok is False
+    assert result.reply == "Let me try that a different way."
+
+
+def test_stream_turn_emits_ordered_events(backend, priya_session, memory, settings):
+    llm = ScriptedLLM(
+        [
+            LLMMessage(tool_calls=[_tc("1", "search_menu", category="dessert")]),
+            LLMMessage(content="We have Gulab Jamun."),
+        ]
+    )
+    events = list(
+        _agent(llm, backend, settings).stream_turn(
+            "what desserts", Conversation(), priya_session, memory
+        )
+    )
+    types = [e.type for e in events]
+    assert types == ["tool_call", "tool_result", "message", "done"]
+    assert events[0].data["name"] == "search_menu"
+    assert events[1].data["ok"] is True
+    assert events[-1].data["stopped_reason"] == "completed"
+
+
+def test_tuple_unpacking_backcompat(backend, priya_session, memory, settings):
+    llm = ScriptedLLM([LLMMessage(content="hello")])
+    reply, trace = _agent(llm, backend, settings).run_turn(
+        "hi", Conversation(), priya_session, memory
+    )
+    assert reply == "hello"
+    assert trace.llm_rounds == 1

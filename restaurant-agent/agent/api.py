@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -71,7 +72,7 @@ class MessageIn(BaseModel):
 
 
 @app.post("/sessions")
-def start_session(body: StartSessionIn) -> dict:
+def start_session(body: StartSessionIn) -> dict[str, Any]:
     if not body.phone and not body.email:
         raise HTTPException(400, "phone or email is required")
     try:
@@ -93,12 +94,12 @@ def start_session(body: StartSessionIn) -> dict:
 
 
 @app.post("/sessions/{session_id}/messages")
-def send_message(session_id: str, body: MessageIn) -> dict:
+def send_message(session_id: str, body: MessageIn) -> dict[str, Any]:
     state = _SESSIONS.get(session_id)
     if state is None:
         raise HTTPException(404, "unknown session_id")
-    reply, trace = _agent.run_turn(body.content, state.conversation, state.session, state.memory)
-    result = {"reply": reply}
+    result = _agent.run_turn(body.content, state.conversation, state.session, state.memory)
+    out: dict[str, Any] = {"reply": result.reply, "stopped_reason": result.stopped_reason}
     if body.verbose:
-        result["trace"] = trace.render()
-    return result
+        out["trace"] = result.trace.render()
+    return out

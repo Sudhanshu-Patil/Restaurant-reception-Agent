@@ -78,10 +78,10 @@ def main(argv: list[str] | None = None) -> None:
         if user.lower() in _QUIT:
             print("agent > Thanks for visiting — see you soon!")
             break
-        reply, trace = agent.run_turn(user, conversation, session, memory)
-        print(f"agent > {reply}\n")
+        result = agent.run_turn(user, conversation, session, memory)
+        print(f"agent > {result.reply}\n")
         if args.verbose:
-            print(trace.render())
+            print(result.trace.render())
             print()
 
     backend.close()

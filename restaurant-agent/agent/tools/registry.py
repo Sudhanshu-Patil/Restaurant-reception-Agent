@@ -1,9 +1,10 @@
 """Tool registration, LLM-facing schema generation, and safe dispatch.
 
-``dispatch`` is the trust boundary between the LLM and the backend: it never raises,
-and turns every failure mode (unknown tool, bad JSON, bad arguments, backend error,
-unexpected exception) into a JSON string with an ``error`` field the model can read
-and react to.
+:meth:`ToolRegistry.dispatch` is the trust boundary between the model and the
+backend. It never raises. Every failure mode - unknown tool, malformed JSON,
+schema-invalid arguments, an upstream error, or an unexpected exception in the
+tool - comes back as a :class:`~agent.tools.result.ToolResult` with ``ok=False``
+and a typed ``error_code`` the model (and the tests) can branch on.
 """
 
 from __future__ import annotations
@@ -11,14 +12,33 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
 from agent.backend.errors import BackendError
 from agent.tools.context import ToolContext
+from agent.tools.result import ErrorCode, ToolResult
 
-ToolFn = Callable[[BaseModel, ToolContext], dict]
+M = TypeVar("M", bound=BaseModel)
+
+ToolFn = Callable[[Any, ToolContext], ToolResult]
+
+#: tools that change state upstream - the agent loop budgets these separately.
+MUTATING_TOOLS: frozenset[str] = frozenset(
+    {
+        "create_reservation",
+        "book_table",
+        "change_reservation",
+        "cancel_reservation",
+        "add_items_to_reservation",
+        "remove_order_item",
+        "remember_preference",
+    }
+)
+
+#: destructive tools - need explicit user intent or a confirmation before running.
+DESTRUCTIVE_TOOLS: frozenset[str] = frozenset({"cancel_reservation", "remove_order_item"})
 
 
 @dataclass(frozen=True)
@@ -46,11 +66,13 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
 
     def register(
-        self, name: str, description: str, args_model: type[BaseModel]
-    ) -> Callable[[ToolFn], ToolFn]:
+        self, name: str, description: str, args_model: type[M]
+    ) -> Callable[[Callable[[M, ToolContext], ToolResult]], Callable[[M, ToolContext], ToolResult]]:
         """Decorator: attach a function to the registry under ``name``."""
 
-        def decorator(fn: ToolFn) -> ToolFn:
+        def decorator(
+            fn: Callable[[M, ToolContext], ToolResult],
+        ) -> Callable[[M, ToolContext], ToolResult]:
             if name in self._tools:
                 raise ValueError(f"tool {name!r} is already registered")
             self._tools[name] = Tool(name, description, args_model, fn)
@@ -58,7 +80,7 @@ class ToolRegistry:
 
         return decorator
 
-    # -- introspection ------------------------------------------------
+    # -- introspection -----------------------------------------------------
     def specs(self) -> list[dict[str, Any]]:
         return [t.openai_spec() for t in self._tools.values()]
 
@@ -68,37 +90,46 @@ class ToolRegistry:
     def __contains__(self, name: object) -> bool:
         return name in self._tools
 
-    # -- execution --------------------------------------------------
-    def dispatch(self, name: str, raw_arguments: str, ctx: ToolContext) -> str:
-        """Run tool ``name``. Always returns a JSON string; never raises."""
+    # -- execution -------------------------------------------------------
+    def dispatch(self, name: str, raw_arguments: str, ctx: ToolContext) -> ToolResult:
+        """Run tool ``name``. Always returns a :class:`ToolResult`; never raises."""
         tool = self._tools.get(name)
         if tool is None:
-            return _error(f"Unknown tool {name!r}. Available: {', '.join(self._tools) or '(none)'}")
+            return ToolResult.failure(
+                ErrorCode.UNKNOWN_TOOL,
+                f"Unknown tool {name!r}. Available: {', '.join(self._tools) or '(none)'}",
+            )
 
         try:
             raw = json.loads(raw_arguments or "{}")
         except json.JSONDecodeError as exc:
-            return _error(f"Arguments for {name!r} were not valid JSON ({exc}).")
+            return ToolResult.failure(
+                ErrorCode.BAD_JSON, f"Arguments for {name!r} were not valid JSON ({exc})."
+            )
         if not isinstance(raw, dict):
-            return _error(f"Arguments for {name!r} must be a JSON object.")
+            return ToolResult.failure(
+                ErrorCode.BAD_ARGUMENTS, f"Arguments for {name!r} must be a JSON object."
+            )
 
         try:
             args = tool.args_model.model_validate(raw)
         except ValidationError as exc:
-            return _error(f"Invalid arguments for {name!r}: {_format_validation(exc)}")
+            return ToolResult.failure(
+                ErrorCode.BAD_ARGUMENTS,
+                f"Invalid arguments for {name!r}: {_format_validation(exc)}",
+            )
 
         try:
-            result = tool.fn(args, ctx)
+            return tool.fn(args, ctx)
         except BackendError as exc:
-            return json.dumps({"error": exc.detail, "status_code": exc.status_code})
+            code = (
+                ErrorCode.UPSTREAM_UNAVAILABLE
+                if exc.status_code >= 502
+                else ErrorCode.UPSTREAM_ERROR
+            )
+            return ToolResult.failure(code, exc.detail, http_status=exc.status_code)
         except Exception as exc:
-            return _error(f"{type(exc).__name__}: {exc}")
-
-        return json.dumps(result, default=str)
-
-
-def _error(message: str) -> str:
-    return json.dumps({"error": message})
+            return ToolResult.failure(ErrorCode.INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
 
 
 def _format_validation(exc: ValidationError) -> str:
