@@ -17,3 +17,8 @@ __MACOSX/
 build/
 dist/
 data/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
